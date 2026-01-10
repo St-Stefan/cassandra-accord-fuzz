@@ -61,6 +61,7 @@ import accord.api.Scheduler;
 import accord.api.Scheduler.Scheduled;
 import accord.burn.BurnTestTopologyService;
 import accord.burn.TopologyUpdates;
+import accord.burn.fuzz.CrashSimulator;
 import accord.burn.random.FrequentLargeRange;
 import accord.coordinate.CoordinationAdapter;
 import accord.impl.DefaultLocalListeners;
@@ -203,6 +204,8 @@ public class Cluster
     final Consumer<Packet> responseSink;
     final Map<Id, NodeSink> sinks = new HashMap<>();
     final MessageListener messageListener;
+    @Nullable
+    private CrashSimulator crashSimulator;
     int clock;
     BiFunction<Id, Id, Link> links;
     long droppedAt;
@@ -217,6 +220,17 @@ public class Cluster
         this.responseSink = responseSink;
         this.linkConfig = defaultLinkConfig(random, rf);
         this.links = linkConfig.defaultLinks;
+    }
+
+    public void setCrashSimulator(@Nullable CrashSimulator crashSimulator)
+    {
+        this.crashSimulator = crashSimulator;
+    }
+
+    @Nullable
+    public CrashSimulator getCrashSimulator()
+    {
+        return crashSimulator;
     }
 
     NodeSink create(Id self, NodeSink.TimeoutSupplier timeouts)
@@ -313,6 +327,14 @@ public class Cluster
         if (next instanceof Packet)
         {
             Packet deliver = (Packet) next;
+
+            // Check if source or destination node is crashed - drop the message
+            if (crashSimulator != null && !crashSimulator.shouldDeliver(deliver.src, deliver.dst))
+            {
+                notifyDropped(deliver.src, deliver.dst, deliver.replyId, deliver.message);
+                return;
+            }
+
             Node on = lookup.apply(deliver.dst);
 
             if (trace.isTraceEnabled())
