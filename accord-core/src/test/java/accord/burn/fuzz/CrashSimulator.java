@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-//Just pasted that license from another file, hope it's fine
 package accord.burn.fuzz;
 
 import accord.local.Node;
@@ -35,6 +34,7 @@ public class CrashSimulator {
     public boolean isCrashed(Node.Id nodeId) {
         return crashedNodes.contains(nodeId);
     }
+
 
     public boolean shouldDeliver(Node.Id from, Node.Id to) {
         return !crashedNodes.contains(from) && !crashedNodes.contains(to);
