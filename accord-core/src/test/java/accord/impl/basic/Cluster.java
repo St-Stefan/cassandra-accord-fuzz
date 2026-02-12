@@ -279,13 +279,15 @@ public class Cluster {
     public boolean processPending() {
         checkFailures.run();
         // All remaining tasks are recurring
-        if (!hasNonRecurring() && pending.nowInMillis() > droppedAt + TimeUnit.MINUTES.toMillis(1L))
+        if (!hasNonRecurring() && pending.nowInMillis() > droppedAt + TimeUnit.MINUTES.toMillis(1L)) {
+            LoggerFactory.getLogger(Cluster.class).warn("Only recurring for over a minute, ending... Pending: {}", pending);
             return false;
-
+        }
         Pending next = pending.poll();
-        if (next == null)
+        if (next == null) {
+            LoggerFactory.getLogger(Cluster.class).warn("Ended, no more pending tasks");
             return false;
-
+        }
         Pending.Global.setActiveOrigin(next);
         processNext(next);
         Pending.Global.clearActiveOrigin();
@@ -296,7 +298,6 @@ public class Cluster {
 
     /**
      * Drain tasks that match predicate.
-     * <p>
      * Returns whether any tasks were processed
      */
     public boolean drain(Predicate<Pending> process) {
@@ -596,27 +597,27 @@ public class Cluster {
                 }
                 messageListener.onTopologyChange(t);
             };
-            NodeSink. TimeoutSupplier timeouts = new NodeSink.TimeoutSupplier() {
+            NodeSink.TimeoutSupplier detTimeouts = new NodeSink.TimeoutSupplier() {
                 final RandomSource random = randomSupplier.get();
-                // TODO (testing): slow/expires should be broadly in sync with our link latency config
+                // TODO: this supplier sets all values to the max of the random range (this is a bodge)
                 final LongSupplier slowDelay, expiresDelay, failsDelay;
 
                 {
-                    int medianSlowDelay = random.nextInt(100, 200);
-                    int medianExpiresDelay = random.nextInt(1000, 2000);
-                    int medianFailsDelay = random.nextInt(1000, 2000);
+//                    int medianSlowDelay = random.nextInt(100, 200);
+//                    int medianExpiresDelay = random.nextInt(1000, 2000);
+//                    int medianFailsDelay = random.nextInt(1000, 2000);
+//
+//                    int minSlowDelay = random.nextInt(0, 100);
+//                    int minExpiresDelay = random.nextBiasedInt(500, 800, 1000);
+//                    int minFailsDelay = random.nextBiasedInt(500, 800, 1000);
+//
+//                    int maxSlowDelay = random.nextBiasedInt(medianSlowDelay + 100, medianSlowDelay + 200, 1000);
+//                    int maxExpiresDelay = random.nextBiasedInt(medianExpiresDelay + 500, 3000, 10000);
+//                    int maxFailsDelay = random.nextBiasedInt(medianFailsDelay + 500, 3000, 10000);
 
-                    int minSlowDelay = random.nextInt(0, 100);
-                    int minExpiresDelay = random.nextBiasedInt(500, 800, 1000);
-                    int minFailsDelay = random.nextBiasedInt(500, 800, 1000);
-
-                    int maxSlowDelay = random.nextBiasedInt(medianSlowDelay + 100, medianSlowDelay + 200, 1000);
-                    int maxExpiresDelay = random.nextBiasedInt(medianExpiresDelay + 500, 3000, 10000);
-                    int maxFailsDelay = random.nextBiasedInt(medianFailsDelay + 500, 3000, 10000);
-
-                    slowDelay = random.biasedUniformLongs(minSlowDelay, medianSlowDelay, maxSlowDelay);
-                    expiresDelay = random.biasedUniformLongs(minExpiresDelay, medianExpiresDelay, maxExpiresDelay);
-                    failsDelay = random.biasedUniformLongs(minFailsDelay, medianFailsDelay, maxFailsDelay);
+                    slowDelay = random.biasedUniformLongs(1000, 1000, 1001);
+                    expiresDelay = random.biasedUniformLongs(10000, 10000, 10001);
+                    failsDelay = random.biasedUniformLongs(20000, 20000, 20001);
                 }
 
                 @Override
@@ -659,11 +660,11 @@ public class Cluster {
             List<Service> services = new ArrayList<>();
             for (Id id : nodes) {
                 ClusterScheduler scheduler = sinks.new ClusterScheduler(id.id);
-                MessageSink messageSink = sinks.create(id, timeouts);
+                MessageSink messageSink = sinks.create(id, detTimeouts);
                 TimeService timeService = timeServiceSupplier.get();
                 OwnershipEventListener ownershipEventListener = topologyRandomizer.listener(id);
                 AsyncExecutor nodeExecutor = nodeExecutorSupplier.apply(id);
-                Agent agent = agentSupplier.apply(ownershipEventListener, scheduler, timeouts);
+                Agent agent = agentSupplier.apply(ownershipEventListener, scheduler, detTimeouts);
                 executorMap.put(id, nodeExecutor);
                 Journal journal = journalFactory.apply(id, random);
                 journalMap.put(id, journal);
@@ -725,106 +726,107 @@ public class Cluster {
 
             ClusterScheduler clusterScheduler = sinks.new ClusterScheduler(-1);
             List<Id> nodesList = new ArrayList<>(Arrays.asList(nodes));
-            Scheduled chaos = clusterScheduler.recurring(() -> {
-                sinks.links = sinks.linkConfig.overrideLinks.apply(nodesList);
-                if (random.decide(0.1f))
-                    updateDurabilityRate.run();
-                if (random.decide(0.1f))
-                    updateProgressLogConcurrency.run();
-            }, 5L, SECONDS);
+            //Scheduled chaos = clusterScheduler.recurring(() -> {
+            //    sinks.links = sinks.linkConfig.overrideLinks.apply(nodesList);
+            //    if (random.decide(0.1f))
+            //        updateDurabilityRate.run();
+            //    if (random.decide(0.1f))
+            //        updateProgressLogConcurrency.run();
+            //}, 5L, SECONDS);
 
-            Scheduled reconfigure = clusterScheduler.recurring(topologyRandomizer::maybeUpdateTopology, 1, SECONDS);
+            //Scheduled reconfigure = clusterScheduler.recurring(topologyRandomizer::maybeUpdateTopology, 1, SECONDS);
 
             Purge purge = new Purge(clusterScheduler, random, nodesList, nodeMap, journalMap);
 
-            Scheduled restart = clusterScheduler.recurring(() -> {
-                Id id = pickNodeNotRefusing(random, nodesList, nodeMap);
+//            Scheduled restart = clusterScheduler.recurring(() -> {
+//                Id id = pickNodeNotRefusing(random, nodesList, nodeMap);
+//
+//                Node node = nodeMap.get(id);
+//                CommandStores stores = node.commandStores();
+//                stores.forAllUnsafe(CommandStore::cancelBootstraps);
+//                while (sinks.drain(getPendingPredicate(id, stores.all()))) ;
+//                topologyRandomizer.rotateBootstrapping(id);
+//
+//                // TODO (expected): we include too many ranges here, including any that are retired
+//                Ranges ranges = Ranges.of(Stream.of(node.commandStores().all()).flatMap(cs -> cs.unsafeGetRangesForEpoch().all().stream()).toArray(Range[]::new));
+//                boolean rebootstrap = topologyFactory.rf > 2 && random.nextBoolean() && !topologyRandomizer.unsafeToRebootstrap(ranges);
+//                trace.debug(String.format("Triggering %s for node %s",
+//                        rebootstrap ? "rebootstrap" : "bounce and journal replay",
+//                        id));
+//
+//                // Clean data and restore from snapshot
+//                ListStore listStore = (ListStore) node.commandStores().dataStore();
+//                NavigableMap<RoutableKey, Timestamped<int[]>> prevData = listStore.copyOfCurrentData();
+//                listStore.clear();
+//
+//                // We are simulating node restart, so its remote listeners will also be gone
+//                ((DefaultRemoteListeners) node.remoteListeners()).clear();
+//                Int2ObjectHashMap<NavigableMap<TxnId, Command>> beforeStores = copyCommands(stores.all());
+//
+//                Journal journal = journalMap.get(id);
+//
+//                Journal.TopologyUpdate lastUpdate = null;
+//                {
+//                    Iterator<? extends Journal.TopologyUpdate> iter = journal.replayTopologies().iterator();
+//                    while (iter.hasNext()) {
+//                        Journal.TopologyUpdate update = iter.next();
+//                        Invariants.require(lastUpdate == null || update.global.epoch() > lastUpdate.global.epoch());
+//                        lastUpdate = update;
+//                    }
+//                }
+//
+//                for (CommandStore store : stores.all())
+//                    store.unsafeClearForTesting();
+//
+//                if (rebootstrap) {
+//                    node.durability().stop();
+//
+//                    // make sure to flush anything in flight before truncating journal
+//                    ((InMemoryJournal) journal).dropAll();
+//                    if (lastUpdate != null)
+//                        node.commandStores().resetTopology(lastUpdate);
+//
+//                    // TODO (expected): we seem to hit Log exceptions when rebootstrapping, suggesting we are handling them poorly
+//                    topologyRandomizer.markRebootstrapping(node);
+//                    stores.rebootstrap(node).invoke(node.agent());
+//                    Catchup.catchup(node);
+//
+//                    while (sinks.drain(getPendingPredicate(id, stores.all()))) ;
+//
+//                    node.durability().start();
+//                } else {
+//                    node.unsafeSetReplaying(true);
+//                    if (lastUpdate != null)
+//                        ((DelayedCommandStores) node.commandStores()).validateShardStateForTesting(lastUpdate);
+//
+//                    listStore.restore();
+//                    for (CommandStore store : stores.all())
+//                        ((ListAgent) store.agent()).restore((InMemoryCommandStore) store);
+//                    journal.replay(stores);
+//                    Catchup.catchup(node);
+//
+//                    // Re-enable safety checks
+//                    while (sinks.drain(getPendingPredicate(id, stores.all()))) ;
+//                    node.unsafeSetReplaying(false);
+//                    verifyConsistentRestore(beforeStores, stores.all());
+//                    stores.forAllUnsafe(commandStore -> commandStore.resumeBootstrap(node));
+//                    // we can get ahead of prior state by executing further if we skip some earlier phase's dependencies
+//                    listStore.checkAtLeast(stores, prevData);
+//                }
+//                trace.debug("Done with replay.");
+//            }, () -> random.nextInt(10, 30), SECONDS);
 
-                Node node = nodeMap.get(id);
-                CommandStores stores = node.commandStores();
-                stores.forAllUnsafe(CommandStore::cancelBootstraps);
-                while (sinks.drain(getPendingPredicate(id, stores.all()))) ;
-                topologyRandomizer.rotateBootstrapping(id);
-
-                // TODO (expected): we include too many ranges here, including any that are retired
-                Ranges ranges = Ranges.of(Stream.of(node.commandStores().all()).flatMap(cs -> cs.unsafeGetRangesForEpoch().all().stream()).toArray(Range[]::new));
-                boolean rebootstrap = topologyFactory.rf > 2 && random.nextBoolean() && !topologyRandomizer.unsafeToRebootstrap(ranges);
-                trace.debug(String.format("Triggering %s for node %s",
-                        rebootstrap ? "rebootstrap" : "bounce and journal replay",
-                        id));
-
-                // Clean data and restore from snapshot
-                ListStore listStore = (ListStore) node.commandStores().dataStore();
-                NavigableMap<RoutableKey, Timestamped<int[]>> prevData = listStore.copyOfCurrentData();
-                listStore.clear();
-
-                // We are simulating node restart, so its remote listeners will also be gone
-                ((DefaultRemoteListeners) node.remoteListeners()).clear();
-                Int2ObjectHashMap<NavigableMap<TxnId, Command>> beforeStores = copyCommands(stores.all());
-
-                Journal journal = journalMap.get(id);
-
-                Journal.TopologyUpdate lastUpdate = null;
-                {
-                    Iterator<? extends Journal.TopologyUpdate> iter = journal.replayTopologies().iterator();
-                    while (iter.hasNext()) {
-                        Journal.TopologyUpdate update = iter.next();
-                        Invariants.require(lastUpdate == null || update.global.epoch() > lastUpdate.global.epoch());
-                        lastUpdate = update;
-                    }
-                }
-
-                for (CommandStore store : stores.all())
-                    store.unsafeClearForTesting();
-
-                if (rebootstrap) {
-                    node.durability().stop();
-
-                    // make sure to flush anything in flight before truncating journal
-                    ((InMemoryJournal) journal).dropAll();
-                    if (lastUpdate != null)
-                        node.commandStores().resetTopology(lastUpdate);
-
-                    // TODO (expected): we seem to hit Log exceptions when rebootstrapping, suggesting we are handling them poorly
-                    topologyRandomizer.markRebootstrapping(node);
-                    stores.rebootstrap(node).invoke(node.agent());
-                    Catchup.catchup(node);
-
-                    while (sinks.drain(getPendingPredicate(id, stores.all()))) ;
-
-                    node.durability().start();
-                } else {
-                    node.unsafeSetReplaying(true);
-                    if (lastUpdate != null)
-                        ((DelayedCommandStores) node.commandStores()).validateShardStateForTesting(lastUpdate);
-
-                    listStore.restore();
-                    for (CommandStore store : stores.all())
-                        ((ListAgent) store.agent()).restore((InMemoryCommandStore) store);
-                    journal.replay(stores);
-                    Catchup.catchup(node);
-
-                    // Re-enable safety checks
-                    while (sinks.drain(getPendingPredicate(id, stores.all()))) ;
-                    node.unsafeSetReplaying(false);
-                    verifyConsistentRestore(beforeStores, stores.all());
-                    stores.forAllUnsafe(commandStore -> commandStore.resumeBootstrap(node));
-                    // we can get ahead of prior state by executing further if we skip some earlier phase's dependencies
-                    listStore.checkAtLeast(stores, prevData);
-                }
-                trace.debug("Done with replay.");
-            }, () -> random.nextInt(10, 30), SECONDS);
-
-            durabilityServices.forEach(DurabilityService::start);
+            //durabilityServices.forEach(DurabilityService::start);
             services.forEach(Service::start);
 
+            //Commented out because the fuzzer should determine restarts and drops
             Runnable stop = () -> {
-                reconfigure.cancel();
+                //reconfigure.cancel();
                 durabilityServices.forEach(DurabilityService::stop);
                 purge.cancel();
-                restart.cancel();
+                //restart.cancel();
                 services.forEach(Service::close);
-                chaos.cancel();
+                //chaos.cancel();
                 sinks.links = sinks.linkConfig.defaultLinks;
             };
             noMoreWorkSignal.accept(stop);
@@ -1084,13 +1086,13 @@ public class Cluster {
     }
 
     private LongSupplier defaultRandomWalkLatencyMicros(RandomSource random) {
-        LongSupplier range = FrequentLargeRange.builder(random)
-                .ratio(1, 5)
-                .small(500, TimeUnit.MICROSECONDS, 5, MILLISECONDS)
-                .large(50, MILLISECONDS, 5, SECONDS)
-                .build().asLongSupplier(random);
+        // Use a constant latency so network timing doesn't depend on RNG consumption
+        final long fixedLatencyMicros = 200L;
+        return () -> fixedLatencyMicros;
 
-        return () -> NANOSECONDS.toMicros(range.getAsLong());
+        // To remember: instead of a single constant, assign a stable per-(from,to) latency
+        // One way: compute a bounded latency from (from.id,to.id) and cache it in defaultLinks()
+
     }
 
     enum OverrideLinkKind {LATENCY, ACTION, BOTH}

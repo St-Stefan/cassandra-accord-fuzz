@@ -18,16 +18,13 @@
 
 package accord.burn.fuzz.trace;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
 import javax.annotation.Nullable;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import accord.burn.fuzz.CrashSimulator;
 import accord.impl.basic.Packet;
 import accord.impl.basic.Pending;
@@ -42,6 +39,8 @@ import accord.primitives.TxnId;
  * rather than exact message IDs, since message IDs are not stable across runs.
  */
 public class GuidedPendingQueue implements PendingQueue {
+    private static final Logger logger = LoggerFactory.getLogger(GuidedPendingQueue.class);
+
     public enum Mode {
         RECORD,
         REPLAY
@@ -57,6 +56,23 @@ public class GuidedPendingQueue implements PendingQueue {
 
     //Maps Packet to its assigned messageId for correlation
     private final Map<Packet, Long> packetToMessageId = new HashMap<>();
+
+    // Skip messages that are not relevant to the Accord consensus protocol (TLA+ spec)
+    // NOTE: InformDurable (INFORM_DURABLE_REQ) seems to be part of every request, so keep it for now
+    // TODO: Investigate all message types, don't eyeball here
+    private static final Set<String> BYPASS_REPLAY_TYPE_NAMES = Set.of(
+            // Durability/garbage collection messages (background sync, not per-transaction)
+            "DurableBefore",
+            "DurableBeforeReply",
+            "GetDurableBefore",
+            "SetShardDurable",
+            "SetGloballyDurable",
+            "NotifyWaitingOn",
+            // Other internal messages
+            "CheckStatus",
+            "CheckStatusOk",
+            "CheckStatusOkFull"
+    );
 
     //Current position in the replay trace
     private int replayIndex = 0;
@@ -99,6 +115,19 @@ public class GuidedPendingQueue implements PendingQueue {
         return recorder;
     }
 
+    // Just get the name of the class for now
+    private boolean shouldBypassReplay(Pending item) {
+        if (!(item instanceof Packet))
+            return false;
+
+        Packet packet = (Packet) item;
+        if (packet.message == null)
+            return false;
+
+        String className = packet.message.getClass().getSimpleName();
+        return BYPASS_REPLAY_TYPE_NAMES.contains(className);
+    }
+
     public Trace trace() {
         return recorder.trace();
     }
@@ -134,6 +163,9 @@ public class GuidedPendingQueue implements PendingQueue {
         if (mode == Mode.RECORD) {
             return pollRecord();
         } else {
+//            if (pollCallCount == 0) {
+//                logger.info("First poll() call in REPLAY mode - trace has {} events", replayTrace != null ? replayTrace.size() : "null");
+//            }
             return pollReplay();
         }
     }
@@ -148,82 +180,104 @@ public class GuidedPendingQueue implements PendingQueue {
         return item;
     }
 
+    // Debug logging control
+    private static final boolean DEBUG_REPLAY = Boolean.getBoolean("accord.replay.debug") || true;
+    private int pollCallCount = 0;
+    private int emptyPollCount = 0;
+
+    private void debugLog(String msg) {
+        if (DEBUG_REPLAY) {
+            logger.info("[REPLAY] " + msg);
+        }
+    }
+
     private Pending pollReplay() {
-        // Drain all pending items
-        List<Pending> items = new ArrayList<>();
-        Pending item;
-        while ((item = delegate.poll()) != null)
-            items.add(item);
+        pollCallCount++;
 
-        if (items.isEmpty())
-            return null;
+        // Use iterator to find matching items
+        // Draining messes up the time because of the requeues
+        // This preserves queue order and logical time progression
 
-        List<Pending> runnables = new ArrayList<>();
-        List<Pending> packets = new ArrayList<>();
-        for (Pending p : items) {
-            if (p instanceof Packet)
-                packets.add(p);
-            else
-                runnables.add(p);
+        // If we have a trace to follow, look for matching packet
+        if (replayTrace != null && replayIndex < replayTrace.size()) {
+            TraceEvent expected = replayTrace.get(replayIndex);
+            debugLog("  Looking for trace event #" + replayIndex + ": " + expected);
+            Iterator<Pending> it = delegate.iterator();
+            int candidateNum = 0;
+            while (it.hasNext()) {
+                Pending p = it.next();
+                if (p instanceof Packet && !shouldBypassReplay(p)) {
+                    boolean isMatch = matches(p, expected);
+                    if (candidateNum < 5 || isMatch) {
+                        debugLog("    Candidate " + candidateNum + ": " + formatPending(p) + " -> match=" + isMatch);
+                    }
+                    candidateNum++;
+                    if (isMatch) {
+                        // Remove only this matching item using remove()
+                        delegate.remove(p);
+                        replayIndex++;
+                        recordEvent(p);
+                        debugLog("  MATCHED! Returning: " + formatPending(p) + ", advancing replayIndex to " + replayIndex);
+                        return p;
+                    }
+                }
+            }
+            debugLog("  NO MATCH for expected event. Will process other items first.");
         }
 
-        if (!runnables.isEmpty()) {
-            Pending runnable = runnables.remove(0);
-            // Put everything else back
-            for (Pending r : runnables) delegate.addNoDelay(r);
-            for (Pending p : packets) delegate.addNoDelay(p);
-            return runnable;
+        // Look for bypassed packets (they don't participate in replay ordering)
+        Iterator<Pending> bypassIt = delegate.iterator();
+        while (bypassIt.hasNext()) {
+            Pending p = bypassIt.next();
+            if (shouldBypassReplay(p)) {
+                delegate.remove(p);
+                recordEvent(p);
+                debugLog("  Returning bypassed packet: " + p);
+                return p;
+            }
         }
 
+        // If trace exhausted, return any available packet
         if (replayTrace == null || replayIndex >= replayTrace.size()) {
-            // Trace exhausted; just return first packet
-            if (!packets.isEmpty()) {
-                Pending first = packets.remove(0);
-                for (Pending p : packets) delegate.addNoDelay(p);
-                recordEvent(first);
-                return first;
-            }
-            return null;
-        }
-
-        TraceEvent expected = replayTrace.get(replayIndex);
-        Pending match = null;
-        for (int i = 0; i < packets.size(); i++) {
-            if (matches(packets.get(i), expected)) {
-                match = packets.remove(i);
-                break;
+            Iterator<Pending> packetIt = delegate.iterator();
+            while (packetIt.hasNext()) {
+                Pending p = packetIt.next();
+                if (p instanceof Packet) {
+                    delegate.remove(p);
+                    recordEvent(p);
+                    return p;
+                }
             }
         }
 
-        // Put non-matching packets back
-        for (Pending p : packets)
-            delegate.addNoDelay(p);
-
-        if (match != null) {
-            replayIndex++;
-            recordEvent(match);
-            return match;
+        // Process runnables to generate packets
+        // Use normal poll() for runnables to advance time properly
+        Pending next = delegate.poll();
+        if (next != null) {
+            return next;
         }
 
-        // Allow the simulation to continue even if the execution diverges
-        // Still doesn't work
-        if (!packets.isEmpty()) {
-            replayIndex++; // Skip this trace event
-            Pending first = packets.remove(0);
-            for (Pending p : packets) delegate.addNoDelay(p);
-            recordEvent(first);
-            return first;
-        }
+        // Putting runnables last is also based on an eyeballed assumption
+        // There should be less network messages than runnables
 
-        // No packets at all - return null
+        debugLog(" Nothing to return, returning null");
         return null;
+    }
+
+    private String formatPending(Pending p) {
+        if (p instanceof Packet) {
+            Packet pkt = (Packet) p;
+            String msgType = pkt.message != null ? String.valueOf(pkt.message.type()) : "null";
+            String msgClass = pkt.message != null ? pkt.message.getClass().getSimpleName() : "null";
+            TxnId txnId = pkt.message != null ? TxnIdExtractor.extract(pkt.message) : null;
+            return String.format("Packet{%s->%s, type=%s, class=%s, txn=%s}",
+                    pkt.src, pkt.dst, msgType, msgClass, txnId);
+        }
+        return p.toString();
     }
 
     /**
      * Check if a pending item matches an expected trace event.
-     * <p>
-     * SIMPLE matching: (from, to, messageType, messageClass, txnId)
-     * No sequence numbers for now - just find the first matching packet.
      */
     private boolean matches(Pending pending, TraceEvent expected) {
         if (!(pending instanceof Packet))
@@ -234,17 +288,20 @@ public class GuidedPendingQueue implements PendingQueue {
         if (expected instanceof TraceEvent.Deliver) {
             TraceEvent.Deliver deliver = (TraceEvent.Deliver) expected;
 
-            // Match on: from, to, messageType, messageClass
+            // Match on: source, dest
             if (!packet.src.equals(deliver.from)) return false;
             if (!packet.dst.equals(deliver.to)) return false;
-            if (packet.message == null) return false;
-            if (packet.message.type() != deliver.messageType) return false;
-            if (!packet.message.getClass().getSimpleName().equals(deliver.messageClass)) return false;
 
-            // txnId matching (must match if trace has one)
-            TxnId packetTxnId = TxnIdExtractor.extract(packet.message);
-            if (deliver.txnId != null && !deliver.txnId.equals(packetTxnId))
-                return false;
+            // Handle null message if the trace has null type, it should match null message
+            if (packet.message == null) {
+                return deliver.messageType == null && (deliver.txnId == null);
+            }
+
+            // Compare message types
+            if (!Objects.equals(packet.message.type(), deliver.messageType)) return false;
+
+            // Compare message class
+            if (!packet.message.getClass().getSimpleName().equals(deliver.messageClass)) return false;
 
             return true;
         } else if (expected instanceof TraceEvent.Drop) {
@@ -252,8 +309,14 @@ public class GuidedPendingQueue implements PendingQueue {
 
             if (!packet.src.equals(drop.from)) return false;
             if (!packet.dst.equals(drop.to)) return false;
-            if (packet.message == null) return false;
-            if (packet.message.type() != drop.messageType) return false;
+
+            // Handle null message
+            if (packet.message == null) {
+                return drop.messageType == null && (drop.txnId == null);
+            }
+
+            // Use Objects.equals for null-safe comparison
+            if (!Objects.equals(packet.message.type(), drop.messageType)) return false;
             if (!packet.message.getClass().getSimpleName().equals(drop.messageClass)) return false;
 
             TxnId packetTxnId = TxnIdExtractor.extract(packet.message);
@@ -277,7 +340,6 @@ public class GuidedPendingQueue implements PendingQueue {
         Packet packet = (Packet) item;
         long messageId = getMessageId(packet);
 
-        // Check if this should be dropped due to a crash
         boolean shouldDrop = crashSimulator != null && !crashSimulator.shouldDeliver(packet.src, packet.dst);
 
         if (shouldDrop) {

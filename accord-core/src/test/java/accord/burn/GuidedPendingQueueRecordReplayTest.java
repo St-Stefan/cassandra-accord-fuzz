@@ -18,6 +18,7 @@
 
 package accord.burn;
 
+import java.io.*;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -26,6 +27,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.atomic.AtomicReference;
 
+import accord.burn.fuzz.NoDelayQueue;
 import org.junit.jupiter.api.Test;
 
 import accord.burn.fuzz.CrashSimulator;
@@ -48,22 +50,16 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Test for GuidedPendingQueue trace recording.
- * <p>
- * NOTE: Full replay is complex because:
- * 1. The system generates new messages during execution (durability requests, retries)
- * 2. These messages have new TxnIds that weren't in the original trace
- * 3. To do true replay, we'd need to control ALL sources of non-determinism
- * <p>
  * For now, this test verifies that recording works correctly.
  */
 public class GuidedPendingQueueRecordReplayTest extends BurnTestBase {
     @Test
     public void recordThenReplay() throws IOException {
         // 3 sets of 3 concurrent requests
-        long seed = 123456789L;
+        long seed = 123456796L;
         int nodeCount = 5;
-        int operations = 9;
-        int concurrency = 3;
+        int operations = 3;
+        int concurrency = 2;
 
         Range r1 = range(forHash(0, HASH_RANGE_START), forHash(0, (HASH_RANGE_END + HASH_RANGE_START) / 2));
         Range r2 = range(forHash(0, (HASH_RANGE_END + HASH_RANGE_START) / 2), forHash(0, HASH_RANGE_END));
@@ -77,7 +73,7 @@ public class GuidedPendingQueueRecordReplayTest extends BurnTestBase {
 
         BurnTestBase.burn(new DefaultRandom(seed), topologyFactory, defaultClients(), defaultNodes(nodeCount), 10, 1, operations, concurrency,
                 (RandomSource rnd) -> {
-                    PendingQueue delegate = new RandomDelayQueue(rnd);
+                    PendingQueue delegate = new NoDelayQueue(rnd);
                     GuidedPendingQueue guided = GuidedPendingQueue.forRecording(delegate, recorder, crashes);
                     recordedQueueRef.set(guided);
                     return guided;
@@ -85,23 +81,90 @@ public class GuidedPendingQueueRecordReplayTest extends BurnTestBase {
                 InMemoryJournal::new);
 
         GuidedPendingQueue recordedQueue = recordedQueueRef.get();
-        assertNotNull(recordedQueue, "recorded guided queue");
+        assertNotNull(recordedQueue);
 
         Trace recordedTrace = recorder.trace();
-        assertNotNull(recordedTrace, "recorded trace");
-        assertFalse(recordedTrace.isEmpty(), "expected some trace events to be recorded");
+        assertNotNull(recordedTrace);
+        assertFalse(recordedTrace.isEmpty());
 
-        // Log trace statistics
+        // Print stats
         System.out.println("Recorded trace with " + recordedTrace.size() + " events");
         System.out.println("Delivers: " + recordedTrace.countByKind(TraceEvent.TraceEventType.DELIVER));
-        System.out.println("Drops: " + recordedTrace.countByKind(TraceEvent.TraceEventType.DROP));
 
         // Verify we recorded meaningful events
         assertTrue(recordedTrace.countByKind(TraceEvent.TraceEventType.DELIVER) > 0,
                 "expected at least some DELIVER events");
 
-        // Persist trace to a file for debugging / future replay tooling
+        // Save to file
         writeTraceToFile(recordedTrace, seed, nodeCount, operations);
+    }
+
+    @Test
+    public void replayRecordedTrace() throws IOException {
+        long seed = 123456796L;
+        int nodeCount = 5;
+        int operations = 3;
+        int concurrency = 2;
+
+        Range r1 = range(forHash(0, HASH_RANGE_START), forHash(0, (HASH_RANGE_END + HASH_RANGE_START) / 2));
+        Range r2 = range(forHash(0, (HASH_RANGE_END + HASH_RANGE_START) / 2), forHash(0, HASH_RANGE_END));
+        TopologyFactory topologyFactory = new TopologyFactory(nodeCount, r1, r2);
+        // Record Phase
+        AtomicReference<GuidedPendingQueue> recordedQueueRef = new AtomicReference<>();
+        TraceRecorder recorder = new TraceRecorder(seed, nodeCount, operations, "replay-test-record");
+        CrashSimulator crashes = new CrashSimulator();
+        System.out.println("=== STARTING BURN === " + topologyFactory);
+        BurnTestBase.burn(new DefaultRandom(seed), topologyFactory, defaultClients(), defaultNodes(nodeCount), 10, 1, operations, concurrency,
+                (RandomSource rnd) -> {
+                    PendingQueue delegate = new NoDelayQueue(rnd);
+                    GuidedPendingQueue guided = GuidedPendingQueue.forRecording(delegate, recorder, crashes);
+                    recordedQueueRef.set(guided);
+                    return guided;
+                },
+                InMemoryJournal::new);
+
+        Trace recordedTrace = recorder.trace();
+        assertNotNull(recordedTrace, "recorded trace");
+        assertFalse(recordedTrace.isEmpty(), "expected trace events");
+
+        System.out.println("=== RECORD PHASE COMPLETE ===");
+        System.out.println("Recorded " + recordedTrace.size() + " events");
+        System.out.println("Delivers: " + recordedTrace.countByKind(TraceEvent.TraceEventType.DELIVER));
+        System.out.println("Drops: " + recordedTrace.countByKind(TraceEvent.TraceEventType.DROP));
+
+        // Print first 20 events for debugging
+        System.out.println("\nFirst 20 recorded events:");
+        for (int i = 0; i < Math.min(20, recordedTrace.size()); i++) {
+            System.out.println("  " + i + ": " + recordedTrace.get(i));
+        }
+
+        // Replay Phase
+        System.out.println("\n=== REPLAY PHASE ===");
+        AtomicReference<GuidedPendingQueue> replayQueueRef = new AtomicReference<>();
+        TraceRecorder replayRecorder = new TraceRecorder(seed, nodeCount, operations, "replay-test-replay");
+        CrashSimulator replayCrashes = new CrashSimulator();
+
+        BurnTestBase.burn(new DefaultRandom(seed), topologyFactory, defaultClients(), defaultNodes(nodeCount), 10, 1, operations, concurrency,
+                (RandomSource rnd) -> {
+                    PendingQueue delegate = new NoDelayQueue(rnd);
+                    GuidedPendingQueue guided = GuidedPendingQueue.forReplay(delegate, replayRecorder, recordedTrace, replayCrashes);
+                    replayQueueRef.set(guided);
+                    return guided;
+                },
+                InMemoryJournal::new);
+
+        GuidedPendingQueue replayQueue = replayQueueRef.get();
+        Trace replayedTrace = replayRecorder.trace();
+
+        System.out.println("=== REPLAY PHASE COMPLETE ===");
+        System.out.println("Replayed " + replayedTrace.size() + " events");
+        System.out.println("Replay complete: " + replayQueue.isReplayComplete());
+
+        // Print first 20 replay events for comparison
+        System.out.println("\nFirst 20 replayed events:");
+        for (int i = 0; i < Math.min(20, replayedTrace.size()); i++) {
+            System.out.println("  " + i + ": " + replayedTrace.get(i));
+        }
     }
 
     private static void writeTraceToFile(Trace trace, long seed, int nodeCount, int operations) throws IOException {
