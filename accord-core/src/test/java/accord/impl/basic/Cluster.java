@@ -816,7 +816,7 @@ public class Cluster {
 //                trace.debug("Done with replay.");
 //            }, () -> random.nextInt(10, 30), SECONDS);
 
-            //durabilityServices.forEach(DurabilityService::start);
+            durabilityServices.forEach(DurabilityService::start);
             services.forEach(Service::start);
 
             //Commented out because the fuzzer should determine restarts and drops

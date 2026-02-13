@@ -59,7 +59,7 @@ public class GuidedPendingQueueRecordReplayTest extends BurnTestBase {
         long seed = 123456796L;
         int nodeCount = 5;
         int operations = 3;
-        int concurrency = 2;
+        int concurrency = 3;
 
         Range r1 = range(forHash(0, HASH_RANGE_START), forHash(0, (HASH_RANGE_END + HASH_RANGE_START) / 2));
         Range r2 = range(forHash(0, (HASH_RANGE_END + HASH_RANGE_START) / 2), forHash(0, HASH_RANGE_END));
@@ -103,8 +103,8 @@ public class GuidedPendingQueueRecordReplayTest extends BurnTestBase {
     public void replayRecordedTrace() throws IOException {
         long seed = 123456796L;
         int nodeCount = 5;
-        int operations = 3;
-        int concurrency = 2;
+        int operations = 9;
+        int concurrency = 3;
 
         Range r1 = range(forHash(0, HASH_RANGE_START), forHash(0, (HASH_RANGE_END + HASH_RANGE_START) / 2));
         Range r2 = range(forHash(0, (HASH_RANGE_END + HASH_RANGE_START) / 2), forHash(0, HASH_RANGE_END));

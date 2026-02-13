@@ -250,10 +250,17 @@ public class GuidedPendingQueue implements PendingQueue {
             }
         }
 
-        // Process runnables to generate packets
-        // Use normal poll() for runnables to advance time properly
+        // Fix for accidentally consuming packets
         Pending next = delegate.poll();
         if (next != null) {
+            if (next instanceof Packet) {
+                // Put it back with no delay so it stays at the front
+                // Doesn't matter since we try to match anyhow
+                delegate.addNoDelay(next);
+                debugLog("  poll() returned a packet, put it back: " + formatPending(next));
+                return null;
+            }
+            debugLog("  Returning runnable to generate packets: " + next.getClass().getSimpleName());
             return next;
         }
 
