@@ -194,17 +194,27 @@ public abstract class TraceEvent {
             return TraceEventType.DROP;
         }
 
+        /**
+         * Dependence following taPCT Definition 2.1 — same as Deliver.
+         */
         @Override
         public boolean isDependentWith(TraceEvent other) {
-            if (involvesNode(other.primaryNode()) || involvesNode(other.secondaryNode()))
-                return true;
-            if (txnId != null && txnId.equals(other.txnId()))
-                return true;
+            if (other instanceof Deliver) {
+                Deliver d = (Deliver) other;
+                if (this.to.equals(d.to)) return true;
+                if (this.to.equals(d.from) && this.txnId != null
+                    && this.txnId.equals(d.txnId)) return true;
+                if (d.to.equals(this.from) && d.txnId != null
+                    && d.txnId.equals(this.txnId)) return true;
+            }
+            if (other instanceof Drop) {
+                Drop d = (Drop) other;
+                if (this.to.equals(d.to)) return true;
+            }
+            if (other instanceof Crash || other instanceof Recover) {
+                if (this.to.equals(other.primaryNode())) return true;
+            }
             return false;
-        }
-
-        private boolean involvesNode(@Nullable Node.Id node) {
-            return node != null && (from.equals(node) || to.equals(node));
         }
 
         @Override

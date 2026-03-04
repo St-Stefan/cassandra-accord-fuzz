@@ -279,15 +279,13 @@ public class Cluster {
     public boolean processPending() {
         checkFailures.run();
         // All remaining tasks are recurring
-        if (!hasNonRecurring() && pending.nowInMillis() > droppedAt + TimeUnit.MINUTES.toMillis(1L)) {
-            LoggerFactory.getLogger(Cluster.class).warn("Only recurring for over a minute, ending... Pending: {}", pending);
+        if (!hasNonRecurring() && pending.nowInMillis() > droppedAt + TimeUnit.MINUTES.toMillis(1L))
             return false;
-        }
+
         Pending next = pending.poll();
-        if (next == null) {
-            LoggerFactory.getLogger(Cluster.class).warn("Ended, no more pending tasks");
+        if (next == null)
             return false;
-        }
+
         Pending.Global.setActiveOrigin(next);
         processNext(next);
         Pending.Global.clearActiveOrigin();
@@ -819,7 +817,6 @@ public class Cluster {
             durabilityServices.forEach(DurabilityService::start);
             services.forEach(Service::start);
 
-            //Commented out because the fuzzer should determine restarts and drops
             Runnable stop = () -> {
                 //reconfigure.cancel();
                 durabilityServices.forEach(DurabilityService::stop);
@@ -1086,13 +1083,14 @@ public class Cluster {
     }
 
     private LongSupplier defaultRandomWalkLatencyMicros(RandomSource random) {
-        // Use a constant latency so network timing doesn't depend on RNG consumption
+        // Option A (deterministic): use a constant latency so network timing doesn't depend on RNG consumption
+        // order-of-execution can still vary due to other sources (e.g. queue jitter), but link latency won't.
         final long fixedLatencyMicros = 200L;
         return () -> fixedLatencyMicros;
 
-        // To remember: instead of a single constant, assign a stable per-(from,to) latency
-        // One way: compute a bounded latency from (from.id,to.id) and cache it in defaultLinks()
-
+        // Option B (also deterministic): instead of a single constant, assign a stable per-(from,to) latency.
+        // One way: compute a bounded latency from (from.id,to.id) and cache it in defaultLinks(...).
+        // Example idea: latencyMicros = 50 + (31*from.id + 17*to.id) % 500;
     }
 
     enum OverrideLinkKind {LATENCY, ACTION, BOTH}
