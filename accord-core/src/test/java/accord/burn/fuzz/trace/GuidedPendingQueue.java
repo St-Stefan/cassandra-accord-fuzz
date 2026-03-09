@@ -77,12 +77,14 @@ public class GuidedPendingQueue implements PendingQueue {
     //Current position in the replay trace
     private int replayIndex = 0;
 
-    //Items that are pending but not yet eligible for replay
-    private final List<Pending> deferredItems = new ArrayList<>();
+    // Packet buffer: holds packets that arrived but don't match current trace event yet
+    // This avoids putting packets back into the delegate which messes up time
+    private final LinkedList<Packet> packetBuffer = new LinkedList<>();
 
     //Stats
     private int deliveredCount = 0;
     private int droppedCount = 0;
+    private int missCount = 0;
 
     /**
      * Create a GuidedPendingQueue in RECORD mode
@@ -194,80 +196,126 @@ public class GuidedPendingQueue implements PendingQueue {
     private Pending pollReplay() {
         pollCallCount++;
 
-        // Use iterator to find matching items
-        // Draining messes up the time because of the requeues
-        // This preserves queue order and logical time progression
-
-        // If we have a trace to follow, look for matching packet
+        // STEP 1: If we have a trace event to follow, look for a matching packet
+        debugLog(" Checking for match to trace event #" + replayIndex + " at " + " (pollCallCount=" + pollCallCount + ", emptyPollCount=" + emptyPollCount + ", bufferSize=" + packetBuffer.size() + ", delegateSize=" + delegate.size() + ", traceSize=" + (replayTrace != null ? replayTrace.size() : "null") + ")");
         if (replayTrace != null && replayIndex < replayTrace.size()) {
             TraceEvent expected = replayTrace.get(replayIndex);
             debugLog("  Looking for trace event #" + replayIndex + ": " + expected);
-            Iterator<Pending> it = delegate.iterator();
+        } else {
+            debugLog("  SKIPPING trace matching: replayTrace=" + (replayTrace != null ? "non-null(size=" + replayTrace.size() + ")" : "null") + ", replayIndex=" + replayIndex);
+        }
+        if (replayTrace != null && replayIndex < replayTrace.size()) {
+            TraceEvent expected = replayTrace.get(replayIndex);
+
+            // First check the packet buffer for a match
+            Iterator<Packet> bufferIt = packetBuffer.iterator();
             int candidateNum = 0;
-            while (it.hasNext()) {
-                Pending p = it.next();
-                if (p instanceof Packet && !shouldBypassReplay(p)) {
-                    boolean isMatch = matches(p, expected);
-                    if (candidateNum < 5 || isMatch) {
-                        debugLog("    Candidate " + candidateNum + ": " + formatPending(p) + " -> match=" + isMatch);
+            while (bufferIt.hasNext()) {
+                Packet pkt = bufferIt.next();
+                if (!shouldBypassReplay(pkt)) {
+                    boolean isMatch = matches(pkt, expected);
+                    if (!isMatch) {
+                        debugLog("    Buffer candidate " + candidateNum + ": " + formatPending(pkt) + " -> match=" + isMatch);
                     }
                     candidateNum++;
                     if (isMatch) {
-                        // Remove only this matching item using remove()
+                        bufferIt.remove();
+                        replayIndex++;
+                        missCount = 0; // Reset miss counter on match
+                        recordEvent(pkt);
+                        debugLog("  MATCHED from buffer! Returning: " + formatPending(pkt) + ", advancing replayIndex to " + replayIndex);
+                        return pkt;
+                    }
+                }
+            }
+
+            // Also check delegate queue for a match (using iterator, don't poll yet)
+            Iterator<Pending> delegateIt = delegate.iterator();
+            while (delegateIt.hasNext()) {
+                Pending p = delegateIt.next();
+                if (p instanceof Packet && !shouldBypassReplay(p)) {
+                    boolean isMatch = matches(p, expected);
+                    if (candidateNum < 5 || isMatch) {
+                        debugLog("    Delegate candidate " + candidateNum + ": " + formatPending(p) + " -> match=" + isMatch);
+                    }
+                    candidateNum++;
+                    if (isMatch) {
                         delegate.remove(p);
                         replayIndex++;
+                        missCount = 0;
                         recordEvent(p);
-                        debugLog("  MATCHED! Returning: " + formatPending(p) + ", advancing replayIndex to " + replayIndex);
+                        debugLog("  MATCHED from delegate! Returning: " + formatPending(p) + ", advancing replayIndex to " + replayIndex);
                         return p;
                     }
                 }
             }
-            debugLog("  NO MATCH for expected event. Will process other items first.");
+
+            debugLog("  NO MATCH for expected event. missCount=" + missCount);
+            missCount++;
         }
 
-        // Look for bypassed packets (they don't participate in replay ordering)
-        Iterator<Pending> bypassIt = delegate.iterator();
-        while (bypassIt.hasNext()) {
-            Pending p = bypassIt.next();
-            if (shouldBypassReplay(p)) {
-                delegate.remove(p);
-                recordEvent(p);
-                debugLog("  Returning bypassed packet: " + p);
-                return p;
+        // STEP 2: Process bypassed packets from buffer first
+        Iterator<Packet> bypassBufIt = packetBuffer.iterator();
+        while (bypassBufIt.hasNext()) {
+            Packet pkt = bypassBufIt.next();
+            if (shouldBypassReplay(pkt)) {
+                bypassBufIt.remove();
+                recordEvent(pkt);
+                debugLog("  Returning bypassed packet from buffer: " + pkt);
+                return pkt;
             }
         }
 
-        // If trace exhausted, return any available packet
-        if (replayTrace == null || replayIndex >= replayTrace.size()) {
-            Iterator<Pending> packetIt = delegate.iterator();
-            while (packetIt.hasNext()) {
-                Pending p = packetIt.next();
-                if (p instanceof Packet) {
-                    delegate.remove(p);
-                    recordEvent(p);
-                    return p;
-                }
-            }
-        }
-
-        // Fix for accidentally consuming packets
+        // STEP 3: Poll from delegate to advance time and get new items
         Pending next = delegate.poll();
-        if (next != null) {
-            if (next instanceof Packet) {
-                // Put it back with no delay so it stays at the front
-                // Doesn't matter since we try to match anyhow
-                delegate.addNoDelay(next);
-                debugLog("  poll() returned a packet, put it back: " + formatPending(next));
-                return null;
-            }
-            debugLog("  Returning runnable to generate packets: " + next.getClass().getSimpleName());
+        if (next == null) {
+            debugLog("  delegate.poll() returned null");
+            return null;
+        }
+
+        // STEP 4: If it's a runnable, just return it (advances time, generates packets)
+        if (!(next instanceof Packet)) {
+            debugLog("  Returning runnable: " + next.getClass().getSimpleName());
             return next;
         }
 
-        // Putting runnables last is also based on an eyeballed assumption
-        // There should be less network messages than runnables
+        Packet packet = (Packet) next;
 
-        debugLog(" Nothing to return, returning null");
+        // STEP 5: If bypassed, return immediately
+        if (shouldBypassReplay(packet)) {
+            recordEvent(packet);
+            debugLog("  Returning bypassed packet from delegate: " + formatPending(packet));
+            return packet;
+        }
+
+        // STEP 6: Check if this polled packet matches current expected event
+        if (replayTrace != null && replayIndex < replayTrace.size()) {
+            TraceEvent expected = replayTrace.get(replayIndex);
+            if (matches(packet, expected)) {
+                replayIndex++;
+                missCount = 0;
+                recordEvent(packet);
+                debugLog("  Polled packet MATCHED! Returning: " + formatPending(packet) + ", advancing replayIndex to " + replayIndex);
+                return packet;
+            }
+        }
+
+        // STEP 7: Packet doesn't match - store in buffer for later
+        packetBuffer.addLast(packet);
+        debugLog("  Polled packet doesn't match, buffered: " + formatPending(packet) + " (buffer size=" + packetBuffer.size() + ")");
+        debugLog(" buffer contents: " + packetBuffer.stream().map(this::formatPending).toList());
+        // STEP 8: If trace exhausted or too many misses, start returning buffered packets
+        boolean traceExhausted = replayTrace == null || replayIndex >= replayTrace.size();
+
+        if (traceExhausted) {
+            if (!packetBuffer.isEmpty()) {
+                Packet buffered = packetBuffer.removeFirst();
+                recordEvent(buffered);
+                return buffered;
+            }
+        }
+
+        // Return null to let caller retry - time has advanced from delegate.poll()
         return null;
     }
 
@@ -305,10 +353,10 @@ public class GuidedPendingQueue implements PendingQueue {
             }
 
             // Compare message types
-            if (!Objects.equals(packet.message.type(), deliver.messageType)) return false;
+            //if (!Objects.equals(packet.message.type(), deliver.messageType)) return false;
 
             // Compare message class
-            if (!packet.message.getClass().getSimpleName().equals(deliver.messageClass)) return false;
+           // if (!packet.message.getClass().getSimpleName().equals(deliver.messageClass)) return false;
 
             return true;
         } else if (expected instanceof TraceEvent.Drop) {

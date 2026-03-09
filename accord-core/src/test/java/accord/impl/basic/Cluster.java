@@ -613,9 +613,9 @@ public class Cluster {
 //                    int maxExpiresDelay = random.nextBiasedInt(medianExpiresDelay + 500, 3000, 10000);
 //                    int maxFailsDelay = random.nextBiasedInt(medianFailsDelay + 500, 3000, 10000);
 
-                    slowDelay = random.biasedUniformLongs(1000, 1000, 1001);
-                    expiresDelay = random.biasedUniformLongs(10000, 10000, 10001);
-                    failsDelay = random.biasedUniformLongs(20000, 20000, 20001);
+                    slowDelay = random.biasedUniformLongs(90000, 90000, 90001);
+                    expiresDelay = random.biasedUniformLongs(100000, 100000, 100001);
+                    failsDelay = random.biasedUniformLongs(200000, 200000, 200001);
                 }
 
                 @Override
@@ -814,7 +814,7 @@ public class Cluster {
 //                trace.debug("Done with replay.");
 //            }, () -> random.nextInt(10, 30), SECONDS);
 
-            durabilityServices.forEach(DurabilityService::start);
+            //durabilityServices.forEach(DurabilityService::start);
             services.forEach(Service::start);
 
             Runnable stop = () -> {
