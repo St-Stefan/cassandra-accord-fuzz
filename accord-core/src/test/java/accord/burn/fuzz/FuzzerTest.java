@@ -32,8 +32,8 @@ public class FuzzerTest {
             42L,    // seed
             5,      // numNodes
             3,      // operations
-            2,      // concurrency
-            3,      // iterations
+            3,      // concurrency
+            20,      // iterations
             2,      // seedPopulationSize
             2,      // mutationsPerTrace
             0       // crashQuota (no crashes for now)

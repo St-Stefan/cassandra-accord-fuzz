@@ -26,7 +26,6 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
-import java.util.Objects;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -116,13 +115,16 @@ public class Fuzzer {
 
             logger.info("[ITER {}/{}] Result: {} events", i + 1, iterations, result.size());
 
+            // Save the actual execution trace
+            saveTrace(result, "iter" + i + "_execution");
+
             // TODO: Check coverage here
             // For now, always consider interesting and mutate
             List<Trace> mutants = mutate(result);
             logger.info("[ITER {}/{}] Generated {} mutants", i + 1, iterations, mutants.size());
-            for (int m = 0; m < mutants.size(); m++) {
-                saveTrace(mutants.get(m), "iter" + i + "_mutant" + m);
-            }
+            // for (int m = 0; m < mutants.size(); m++) {
+            //     saveTrace(mutants.get(m), "iter" + i + "_mutant" + m);
+            // }
             workQueue.addAll(mutants);
         }
 
@@ -214,33 +216,33 @@ public class Fuzzer {
         }
     }
 
+    private static final Node.Id CLIENT_NODE = new Node.Id(-1);
+
     /**
-     * Swap two racy events within a window. Racy = dependent (per TraceEvent.isDependentWith)
-     * but from different sources, so the swap actually changes the receiving node's local order.
+     * Swap two random events as long as we still have one command
      */
     private Trace swapEvents(Trace schedule, List<TraceEvent> events) {
         for (int attempt = 0; attempt < 20; attempt++) {
             int i = random.nextInt(events.size());
-            int remaining = events.size() - i - 1;
-            if (remaining < 1) continue;
-            int j = i + 1 + random.nextInt(Math.min(10, remaining));
-            if (j >= events.size()) continue;
+            int j = random.nextInt(events.size());
+            if (i == j) continue;
+
+            // Ensure i < j for consistent logging
+            if (i > j) { int tmp = i; i = j; j = tmp; }
 
             TraceEvent a = events.get(i);
             TraceEvent b = events.get(j);
 
-            if (!(a instanceof TraceEvent.Deliver) || !(b instanceof TraceEvent.Deliver)) continue;
+            // If swapping into index 0, the replacement must originate from client node -1
+            if (i == 0 && !CLIENT_NODE.equals(b.secondaryNode())) continue;
 
-            // Dependent (same dest or causal) + different source = racy
-            if (a.isDependentWith(b) && !Objects.equals(a.secondaryNode(), b.secondaryNode())) {
-                logger.info("    SWAP (racy) [{}] <-> [{}]: {} <-> {}", i, j, a, b);
-                List<TraceEvent> swapped = new ArrayList<>(events);
-                swapped.set(i, b);
-                swapped.set(j, a);
-                return new Trace(schedule.header(), swapped);
-            }
+            logger.info("    SWAP [{}] <-> [{}]: {} <-> {}", i, j, a, b);
+            List<TraceEvent> swapped = new ArrayList<>(events);
+            swapped.set(i, b);
+            swapped.set(j, a);
+            return new Trace(schedule.header(), swapped);
         }
-        logger.info("    SWAP failed: no racy pair found in 20 attempts");
+        logger.info("    SWAP failed: no valid pair found in 20 attempts");
         return null;
     }
 

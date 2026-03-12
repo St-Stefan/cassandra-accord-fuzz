@@ -104,8 +104,8 @@ public class GuidedPendingQueueRecordReplayTest extends BurnTestBase {
     public void replayRecordedTrace() throws IOException {
         long seed = 123456799L;
         int nodeCount = 5;
-        int operations = 1;
-        int concurrency = 1;
+        int operations = 3;
+        int concurrency = 3;
 
         Range r1 = range(forHash(0, HASH_RANGE_START), forHash(0, (HASH_RANGE_END + HASH_RANGE_START) / 2));
         Range r2 = range(forHash(0, (HASH_RANGE_END + HASH_RANGE_START) / 2), forHash(0, HASH_RANGE_END));
@@ -138,10 +138,6 @@ public class GuidedPendingQueueRecordReplayTest extends BurnTestBase {
         for (int i = 0; i < Math.min(20, recordedTrace.size()); i++) {
             System.out.println("  " + i + ": " + recordedTrace.get(i));
         }
-
-        Trace testTrace = new Trace(recordedTrace.header());
-        testTrace.add(recordedTrace.get(0));
-
         // === REPLAY PHASE ===
         System.out.println("\n=== REPLAY PHASE ===");
         AtomicReference<GuidedPendingQueue> replayQueueRef = new AtomicReference<>();
@@ -151,7 +147,7 @@ public class GuidedPendingQueueRecordReplayTest extends BurnTestBase {
         BurnTestBase.burn(new DefaultRandom(seed), topologyFactory, defaultClients(), defaultNodes(nodeCount), 10, 1, operations, concurrency,
                 (RandomSource rnd) -> {
                     PendingQueue delegate = new NoDelayQueue(rnd);
-                    GuidedPendingQueue guided = GuidedPendingQueue.forReplay(delegate, replayRecorder, testTrace, replayCrashes);
+                    GuidedPendingQueue guided = GuidedPendingQueue.forReplay(delegate, replayRecorder, recordedTrace, replayCrashes);
                     replayQueueRef.set(guided);
                     return guided;
                 },
