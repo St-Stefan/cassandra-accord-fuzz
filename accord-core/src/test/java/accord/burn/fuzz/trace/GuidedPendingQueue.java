@@ -61,14 +61,14 @@ public class GuidedPendingQueue implements PendingQueue {
     // NOTE: InformDurable (INFORM_DURABLE_REQ) seems to be part of every request, so keep it for now
     // TODO: Investigate all message types, don't eyeball here
     private static final Set<String> BYPASS_REPLAY_TYPE_NAMES = Set.of(
-            // Durability/garbage collection messages (background sync, not per-transaction)
+            // Skip durability/garbage collection messages
             "DurableBefore",
             "DurableBeforeReply",
             "GetDurableBefore",
             "SetShardDurable",
             "SetGloballyDurable",
             "NotifyWaitingOn",
-            // Other internal messages
+
             "CheckStatus",
             "CheckStatusOk",
             "CheckStatusOkFull"
@@ -77,9 +77,9 @@ public class GuidedPendingQueue implements PendingQueue {
     //Current position in the replay trace
     private int replayIndex = 0;
 
-    // Skip a trace event if we fail to match it after this many polls
-    private static final int MAX_STALE_POLLS = 6000;
-    private int stalePollCount = 0;
+    // Skip a trace event if we fail to match it within this logical-time window
+    private static final long REPLAY_CHOICE_TIMEOUT_MILLIS = 500;
+    private long lastReplayChoiceTimeMillis = Long.MIN_VALUE;
 
     //Items that are pending but not yet eligible for replay
     private final LinkedList<Pending> mailbox = new LinkedList<>();
@@ -129,7 +129,7 @@ public class GuidedPendingQueue implements PendingQueue {
             return false;
 
         String className = packet.message.getClass().getSimpleName();
-        return BYPASS_REPLAY_TYPE_NAMES.contains(className) || packet.dst==packet.src;
+        return BYPASS_REPLAY_TYPE_NAMES.contains(className) || packet.dst.equals(packet.src);
     }
 
     public Trace trace() {
@@ -197,6 +197,9 @@ public class GuidedPendingQueue implements PendingQueue {
 
     private Pending pollReplay() {
         pollCallCount++;
+        long now = delegate.nowInMillis();
+        if (lastReplayChoiceTimeMillis == Long.MIN_VALUE)
+            lastReplayChoiceTimeMillis = now;
 
         // Use iterator to find matching items
         // Draining messes up the time because of the requeues
@@ -205,7 +208,8 @@ public class GuidedPendingQueue implements PendingQueue {
         // If we have a trace to follow, look for matching packet
         if (replayTrace != null && replayIndex < replayTrace.size()) {
             TraceEvent expected = replayTrace.get(replayIndex);
-            //debugLog("  Looking for trace event #" + replayIndex + ": " + expected + ", count: " + pollCallCount + " calls");
+            debugLog("  Looking for trace event #" + replayIndex + ": " + expected + ", count: " + pollCallCount + " calls, time: " + now + "ms, last choice at: " + lastReplayChoiceTimeMillis);
+            debugLog(" Delegate stats: " + delegate.size());
 
             //Check mailbox first for matching items
             Iterator<Pending> mailboxIt = mailbox.iterator();
@@ -213,14 +217,14 @@ public class GuidedPendingQueue implements PendingQueue {
             while (mailboxIt.hasNext()) {
                 Pending p = mailboxIt.next();
                 boolean isMatch = matches(p, expected);
-                //debugLog("    Mailbox candidate " + mailboxCandidateNum + ": " + formatPending(p) + " -> match=" + isMatch);
+                debugLog("    Mailbox candidate " + mailboxCandidateNum + ": " + formatPending(p) + " -> match=" + isMatch);
                 mailboxCandidateNum++;
                 if (isMatch) {
                     mailboxIt.remove();
                     replayIndex++;
-                    stalePollCount = 0;
+                    lastReplayChoiceTimeMillis = now;
                     recordEvent(p);
-                    //debugLog("  MATCHED in mailbox! Returning: " + formatPending(p) + ", advancing replayIndex to " + replayIndex);
+                    debugLog("  MATCHED in mailbox! Returning: " + formatPending(p) + ", advancing replayIndex to " + replayIndex);
                     return p;
                 }
             }
@@ -255,7 +259,7 @@ public class GuidedPendingQueue implements PendingQueue {
                     mailbox.add(p);
                 }
                 replayIndex++;
-                stalePollCount = 0;
+                lastReplayChoiceTimeMillis = now;
                 recordEvent(matched);
                 //debugLog("  MATCHED! Returning: " + formatPending(matched) + ", advancing replayIndex to " + replayIndex);
                 return matched;
@@ -266,11 +270,10 @@ public class GuidedPendingQueue implements PendingQueue {
                 mailbox.add(p);
             }
 
-            // Stale detection: skip this trace event if we've been stuck too long
-            stalePollCount++;
-            if (stalePollCount >= MAX_STALE_POLLS) {
+            // If this replay choice is stale in logical time, advance to next expected event
+            if (now - lastReplayChoiceTimeMillis >= REPLAY_CHOICE_TIMEOUT_MILLIS && replayIndex>0) {
                 replayIndex++;
-                stalePollCount = 0;
+                lastReplayChoiceTimeMillis = now;
                 return null;
             }
         }
@@ -295,7 +298,7 @@ public class GuidedPendingQueue implements PendingQueue {
             if (!mailbox.isEmpty()) {
                 Pending p = mailbox.removeFirst();
                 recordEvent(p);
-                //debugLog("  Trace exhausted, returning from mailbox: " + formatPending(p));
+                debugLog("  Trace exhausted, returning from mailbox: " + formatPending(p));
                 return p;
             }
 
@@ -367,19 +370,6 @@ public class GuidedPendingQueue implements PendingQueue {
 
             if (!packet.src.equals(drop.from)) return false;
             if (!packet.dst.equals(drop.to)) return false;
-
-            // Handle null message
-            if (packet.message == null) {
-                return drop.messageType == null && (drop.txnId == null);
-            }
-
-            // Use Objects.equals for null-safe comparison
-            if (!Objects.equals(packet.message.type(), drop.messageType)) return false;
-            if (!packet.message.getClass().getSimpleName().equals(drop.messageClass)) return false;
-
-            TxnId packetTxnId = TxnIdExtractor.extract(packet.message);
-            if (drop.txnId != null && !drop.txnId.equals(packetTxnId))
-                return false;
 
             return true;
         }
