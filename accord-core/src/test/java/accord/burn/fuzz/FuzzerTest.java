@@ -29,14 +29,15 @@ public class FuzzerTest {
     @Test
     public void testBasicFuzzLoop() {
         Fuzzer fuzzer = new Fuzzer(
-            42L,    // seed
-            5,      // numNodes
-            3,      // operations
-            3,      // concurrency
-            20,      // iterations
-            2,      // seedPopulationSize
-            2,      // mutationsPerTrace
-            0       // crashQuota (no crashes for now)
+                42L,    // seed
+                7,      // numNodes
+                3,      // operations
+                3,      // concurrency
+                5000,      // iterations
+                1,      // seedPopulationSize
+                1,      // mutationsPerTrace
+                0,       // crashQuota (no crashes for now)
+                100
         );
 
         fuzzer.run();

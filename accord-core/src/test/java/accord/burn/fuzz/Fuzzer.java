@@ -58,6 +58,7 @@ public class Fuzzer {
     private final Random random;
     private final int mutationsPerTrace;
     private final int crashQuota;
+    private final int traceEventBudget;
     private final int numNodes;
     private final int iterations;
     private final int seedPopulationSize;
@@ -69,6 +70,12 @@ public class Fuzzer {
 
     public Fuzzer(long seed, int numNodes, int operations, int concurrency,
                   int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota) {
+        this(seed, numNodes, operations, concurrency, iterations, seedPopulationSize, mutationsPerTrace, crashQuota, 0);
+    }
+
+    public Fuzzer(long seed, int numNodes, int operations, int concurrency,
+                  int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota,
+                  int traceEventBudget) {
         this.random = new Random(seed);
         this.baseSeed = seed;
         this.numNodes = numNodes;
@@ -78,6 +85,7 @@ public class Fuzzer {
         this.seedPopulationSize = seedPopulationSize;
         this.mutationsPerTrace = mutationsPerTrace;
         this.crashQuota = crashQuota;
+        this.traceEventBudget = traceEventBudget;
         this.workQueue = new ArrayDeque<>();
     }
 
@@ -85,8 +93,9 @@ public class Fuzzer {
      * Run the fuzzer for the configured number of iterations.
      */
     public void run() {
-        logger.info("=== FUZZER START === seed={}, nodes={}, ops={}, seeds={}, iterations={}, mutations/trace={}",
-                    baseSeed, numNodes, operations, seedPopulationSize, iterations, mutationsPerTrace);
+        logger.info("=== FUZZER START === seed={}, nodes={}, ops={}, seeds={}, iterations={}, mutations/trace={}, traceBudget={}",
+                    baseSeed, numNodes, operations, seedPopulationSize, iterations, mutationsPerTrace,
+                    traceEventBudget > 0 ? traceEventBudget : "unlimited");
 
         // Seed phase: generate initial population with random scheduling
         for (int i = 0; i < seedPopulationSize; i++) {
@@ -140,13 +149,11 @@ public class Fuzzer {
         long runSeed = schedule != null ? schedule.header().seed() : baseSeed + random.nextLong();
         logger.info("  [{}] runSeed={}, mode={}", runId, runSeed, schedule == null ? "RECORD" : "REPLAY");
 
-        Range r1 = range(forHash(0, BurnTestBase.HASH_RANGE_START),
-                        forHash(0, (BurnTestBase.HASH_RANGE_END + BurnTestBase.HASH_RANGE_START) / 2));
-        Range r2 = range(forHash(0, (BurnTestBase.HASH_RANGE_END + BurnTestBase.HASH_RANGE_START) / 2),
-                        forHash(0, BurnTestBase.HASH_RANGE_END));
-        TopologyFactory topologyFactory = new TopologyFactory(numNodes, r1, r2);
+        Range full = range(forHash(0, BurnTestBase.HASH_RANGE_START),
+                forHash(0, BurnTestBase.HASH_RANGE_END));
+        TopologyFactory topologyFactory = new TopologyFactory(numNodes, full);
 
-        TraceRecorder recorder = new TraceRecorder(runSeed, numNodes, operations, runId);
+        TraceRecorder recorder = new TraceRecorder(runSeed, numNodes, operations, runId, traceEventBudget);
         CrashSimulator crashes = new CrashSimulator();
         AtomicReference<GuidedPendingQueue> queueRef = new AtomicReference<>();
 
@@ -164,10 +171,10 @@ public class Fuzzer {
                     PendingQueue delegate = new NoDelayQueue(rnd);
                     GuidedPendingQueue guided;
                     if (schedule == null) {
-                        guided = GuidedPendingQueue.forRecording(delegate, recorder, crashes);
+                        guided = GuidedPendingQueue.forRecording(delegate, recorder, crashes, traceEventBudget > 0 ? traceEventBudget : null);
                     } else {
                         // Replay mode: guided by schedule, but also records the actual execution
-                        guided = GuidedPendingQueue.forReplay(delegate, recorder, schedule, crashes);
+                        guided = GuidedPendingQueue.forReplay(delegate, recorder, schedule, crashes, traceEventBudget > 0 ? traceEventBudget : null);
                     }
                     queueRef.set(guided);
                     return guided;

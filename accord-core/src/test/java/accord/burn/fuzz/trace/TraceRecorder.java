@@ -39,19 +39,29 @@ public class TraceRecorder {
     private final AtomicLong nextEventId = new AtomicLong(1);
     private final AtomicLong nextMessageId = new AtomicLong(1);
     private final AtomicLong logicalClock = new AtomicLong(0);
+    private final int maxEvents;
 
     //TODO: Remove this when timeouts are gone
     private final Map<WeakMessageKey, Integer> tupleSequences = new HashMap<>();
 
     public TraceRecorder(Trace trace) {
+        this(trace, 0);
+    }
+
+    public TraceRecorder(Trace trace, int maxEvents) {
         this.trace = Objects.requireNonNull(trace, "trace");
+        this.maxEvents = maxEvents <= 0 ? Integer.MAX_VALUE : maxEvents;
     }
 
     /**
      * Create a new recorder with a fresh trace
      */
     public TraceRecorder(long seed, int nodeCount, int operationCount, String version) {
-        this(new Trace(new Trace.Header(seed, nodeCount, operationCount, version)));
+        this(seed, nodeCount, operationCount, version, 0);
+    }
+
+    public TraceRecorder(long seed, int nodeCount, int operationCount, String version, int maxEvents) {
+        this(new Trace(new Trace.Header(seed, nodeCount, operationCount, version)), maxEvents);
     }
 
     public Trace trace() {
@@ -73,10 +83,22 @@ public class TraceRecorder {
         return nextMessageId.getAndIncrement();
     }
 
+
+    public boolean hasEventBudget() {
+        return maxEvents != Integer.MAX_VALUE;
+    }
+
+    private boolean canRecordNextEvent() {
+        return eventCount() < maxEvents;
+    }
+
     /**
      * Record a message delivery event
      */
-    public TraceEvent.Deliver recordDeliver(long messageId, Node.Id from, Node.Id to, Message message, long requestId, long replyId) {
+    public @Nullable TraceEvent.Deliver recordDeliver(long messageId, Node.Id from, Node.Id to, Message message, long requestId, long replyId) {
+        if (!canRecordNextEvent())
+            return null;
+
         long eventId = nextEventId.getAndIncrement();
         long timestamp = tick();
         MessageType type = message != null ? message.type() : null;
@@ -96,7 +118,10 @@ public class TraceRecorder {
     /**
      * Record a message drop event
      */
-    public TraceEvent.Drop recordDrop(long messageId, Node.Id from, Node.Id to, Message message) {
+    public @Nullable TraceEvent.Drop recordDrop(long messageId, Node.Id from, Node.Id to, Message message) {
+        if (!canRecordNextEvent())
+            return null;
+
         long eventId = nextEventId.getAndIncrement();
         long timestamp = tick();
         MessageType type = message != null ? message.type() : null;
@@ -117,7 +142,10 @@ public class TraceRecorder {
      * Record a node crash event
      * Technically possible
      */
-    public TraceEvent.Crash recordCrash(Node.Id node) {
+    public @Nullable TraceEvent.Crash recordCrash(Node.Id node) {
+        if (!canRecordNextEvent())
+            return null;
+
         long eventId = nextEventId.getAndIncrement();
         long timestamp = tick();
 
@@ -130,7 +158,10 @@ public class TraceRecorder {
      * Record a node recovery event
      * Not to be confused with the recovery algorithm
      */
-    public TraceEvent.Recover recordRecover(Node.Id node) {
+    public @Nullable TraceEvent.Recover recordRecover(Node.Id node) {
+        if (!canRecordNextEvent())
+            return null;
+
         long eventId = nextEventId.getAndIncrement();
         long timestamp = tick();
 
@@ -142,7 +173,10 @@ public class TraceRecorder {
     /**
      * Record a client operation event
      */
-    public TraceEvent.ClientOp recordClientOp(long opId, Node.Id coordinator, @Nullable TxnId txnId, String description) {
+    public @Nullable TraceEvent.ClientOp recordClientOp(long opId, Node.Id coordinator, @Nullable TxnId txnId, String description) {
+        if (!canRecordNextEvent())
+            return null;
+
         long eventId = nextEventId.getAndIncrement();
         long timestamp = tick();
 
@@ -156,7 +190,10 @@ public class TraceRecorder {
     /**
      * Record a timer event
      */
-    public TraceEvent.Timer recordTimer(long timerId, Node.Id node, String timerType) {
+    public @Nullable TraceEvent.Timer recordTimer(long timerId, Node.Id node, String timerType) {
+        if (!canRecordNextEvent())
+            return null;
+
         long eventId = nextEventId.getAndIncrement();
         long timestamp = tick();
 
@@ -184,6 +221,7 @@ public class TraceRecorder {
 
     @Override
     public String toString() {
-        return String.format("TraceRecorder{events=%d, states=%d, clock=%d}", eventCount(), uniqueStateCount(), logicalClock.get());
+        return String.format("TraceRecorder{events=%d, states=%d, clock=%d, budget=%s}",
+                eventCount(), uniqueStateCount(), logicalClock.get(), hasEventBudget() ? maxEvents : "unlimited");
     }
 }

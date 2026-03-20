@@ -53,6 +53,7 @@ public class GuidedPendingQueue implements PendingQueue {
     private final Trace replayTrace;
     @Nullable
     private final CrashSimulator crashSimulator;
+    private final int maxTraceEvents;
 
     //Maps Packet to its assigned messageId for correlation
     private final Map<Packet, Long> packetToMessageId = new HashMap<>();
@@ -67,11 +68,11 @@ public class GuidedPendingQueue implements PendingQueue {
             "GetDurableBefore",
             "SetShardDurable",
             "SetGloballyDurable",
-            "NotifyWaitingOn",
+            "NotifyWaitingOn"
 
-            "CheckStatus",
-            "CheckStatusOk",
-            "CheckStatusOkFull"
+            //"CheckStatus",
+            //"CheckStatusOk",
+            //"CheckStatusOkFull"
     );
 
     //Current position in the replay trace
@@ -92,23 +93,32 @@ public class GuidedPendingQueue implements PendingQueue {
      * Create a GuidedPendingQueue in RECORD mode
      */
     public static GuidedPendingQueue forRecording(PendingQueue delegate, TraceRecorder recorder, CrashSimulator crashSimulator) {
-        return new GuidedPendingQueue(delegate, Mode.RECORD, recorder, null, crashSimulator);
+        return forRecording(delegate, recorder, crashSimulator, null);
+    }
+
+    public static GuidedPendingQueue forRecording(PendingQueue delegate, TraceRecorder recorder, CrashSimulator crashSimulator, @Nullable Integer maxTraceEvents) {
+        return new GuidedPendingQueue(delegate, Mode.RECORD, recorder, null, crashSimulator, maxTraceEvents);
     }
 
     /**
      * Create a GuidedPendingQueue in REPLAY mode
      */
     public static GuidedPendingQueue forReplay(PendingQueue delegate, TraceRecorder recorder, Trace replayTrace, @Nullable CrashSimulator crashSimulator) {
-        Objects.requireNonNull(replayTrace, "replayTrace required for REPLAY mode");
-        return new GuidedPendingQueue(delegate, Mode.REPLAY, recorder, replayTrace, crashSimulator);
+        return forReplay(delegate, recorder, replayTrace, crashSimulator, null);
     }
 
-    private GuidedPendingQueue(PendingQueue delegate, Mode mode, TraceRecorder recorder, @Nullable Trace replayTrace, @Nullable CrashSimulator crashSimulator) {
+    public static GuidedPendingQueue forReplay(PendingQueue delegate, TraceRecorder recorder, Trace replayTrace, @Nullable CrashSimulator crashSimulator, @Nullable Integer maxTraceEvents) {
+        Objects.requireNonNull(replayTrace, "replayTrace required for REPLAY mode");
+        return new GuidedPendingQueue(delegate, Mode.REPLAY, recorder, replayTrace, crashSimulator, maxTraceEvents);
+    }
+
+    private GuidedPendingQueue(PendingQueue delegate, Mode mode, TraceRecorder recorder, @Nullable Trace replayTrace, @Nullable CrashSimulator crashSimulator, @Nullable Integer maxTraceEvents) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
         this.mode = Objects.requireNonNull(mode, "mode");
         this.recorder = Objects.requireNonNull(recorder, "recorder");
         this.replayTrace = replayTrace;
         this.crashSimulator = crashSimulator;
+        this.maxTraceEvents = maxTraceEvents == null || maxTraceEvents <= 0 ? Integer.MAX_VALUE : maxTraceEvents;
     }
 
     public Mode mode() {
@@ -164,6 +174,9 @@ public class GuidedPendingQueue implements PendingQueue {
 
     @Override
     public Pending poll() {
+        if (recorder.eventCount() >= maxTraceEvents) {
+            return null;
+        }
         if (mode == Mode.RECORD) {
             return pollRecord();
         } else {
@@ -185,17 +198,19 @@ public class GuidedPendingQueue implements PendingQueue {
     }
 
     // Debug logging control
-    private static final boolean DEBUG_REPLAY = Boolean.getBoolean("accord.replay.debug") || true;
+    private static final boolean DEBUG_REPLAY = Boolean.getBoolean("accord.replay.debug");
+    private static final boolean DEBUG_REPLAY_VERBOSE = false;
     private int pollCallCount = 0;
-    private int emptyPollCount = 0;
 
     private void debugLog(String msg) {
-        if (DEBUG_REPLAY) {
+        if (DEBUG_REPLAY || DEBUG_REPLAY_VERBOSE) {
             logger.info("[REPLAY] " + msg);
         }
     }
 
     private Pending pollReplay() {
+        final boolean debugAllReplayLogs = DEBUG_REPLAY_VERBOSE;
+
         pollCallCount++;
         long now = delegate.nowInMillis();
         if (lastReplayChoiceTimeMillis == Long.MIN_VALUE)
@@ -208,8 +223,8 @@ public class GuidedPendingQueue implements PendingQueue {
         // If we have a trace to follow, look for matching packet
         if (replayTrace != null && replayIndex < replayTrace.size()) {
             TraceEvent expected = replayTrace.get(replayIndex);
-            debugLog("  Looking for trace event #" + replayIndex + ": " + expected + ", count: " + pollCallCount + " calls, time: " + now + "ms, last choice at: " + lastReplayChoiceTimeMillis);
-            debugLog(" Delegate stats: " + delegate.size());
+            if (debugAllReplayLogs) debugLog("  Looking for trace event #" + replayIndex + ": " + expected + ", count: " + pollCallCount + " calls, time: " + now + "ms, last choice at: " + lastReplayChoiceTimeMillis);
+            if (debugAllReplayLogs) debugLog(" Delegate stats: " + delegate.size());
 
             //Check mailbox first for matching items
             Iterator<Pending> mailboxIt = mailbox.iterator();
@@ -217,7 +232,7 @@ public class GuidedPendingQueue implements PendingQueue {
             while (mailboxIt.hasNext()) {
                 Pending p = mailboxIt.next();
                 boolean isMatch = matches(p, expected);
-                debugLog("    Mailbox candidate " + mailboxCandidateNum + ": " + formatPending(p) + " -> match=" + isMatch);
+                if (debugAllReplayLogs) debugLog("    Mailbox candidate " + mailboxCandidateNum + ": " + formatPending(p) + " -> match=" + isMatch);
                 mailboxCandidateNum++;
                 if (isMatch) {
                     mailboxIt.remove();
@@ -240,13 +255,13 @@ public class GuidedPendingQueue implements PendingQueue {
             for (Pending p : snapshot) {
                 if (p instanceof Packet && !shouldBypassReplay(p)) {
                     boolean isMatch = matches(p, expected);
-                    //debugLog("    Candidate " + candidateNum + ": " + formatPending(p) + " -> match=" + isMatch);
+                    if (debugAllReplayLogs) debugLog("    Candidate " + candidateNum + ": " + formatPending(p) + " -> match=" + isMatch);
                     candidateNum++;
                     if (matched == null && isMatch) {
                         matched = p;
                     } else {
                         toMailbox.add(p);
-                        //debugLog("    Not a match, moved to mailbox: " + formatPending(p));
+                        if (debugAllReplayLogs) debugLog("    Not a match, moved to mailbox: " + formatPending(p));
                     }
                 }
             }
@@ -261,7 +276,7 @@ public class GuidedPendingQueue implements PendingQueue {
                 replayIndex++;
                 lastReplayChoiceTimeMillis = now;
                 recordEvent(matched);
-                //debugLog("  MATCHED! Returning: " + formatPending(matched) + ", advancing replayIndex to " + replayIndex);
+                if (debugAllReplayLogs) debugLog("  MATCHED! Returning: " + formatPending(matched) + ", advancing replayIndex to " + replayIndex);
                 return matched;
             }
             // No match found — still move non-matching packets to mailbox
@@ -288,7 +303,7 @@ public class GuidedPendingQueue implements PendingQueue {
             if (shouldBypassReplay(p)) {
                 delegate.remove(p);
                 recordEvent(p);
-                //debugLog("  Returning bypassed packet: " + p);
+                if (debugAllReplayLogs) debugLog("  Returning bypassed packet: " + p);
                 return p;
             }
         }
@@ -298,7 +313,7 @@ public class GuidedPendingQueue implements PendingQueue {
             if (!mailbox.isEmpty()) {
                 Pending p = mailbox.removeFirst();
                 recordEvent(p);
-                debugLog("  Trace exhausted, returning from mailbox: " + formatPending(p));
+                if (debugAllReplayLogs) debugLog("  Trace exhausted, returning from mailbox: " + formatPending(p));
                 return p;
             }
 
@@ -322,17 +337,17 @@ public class GuidedPendingQueue implements PendingQueue {
                 // Put it back with no delay so it stays at the front
                 // Doesn't matter since we try to match anyhow
                 delegate.addNoDelay(next);
-                //debugLog("  SOMEHOW WE STILL HAVE A PACKET " + formatPending(next));
+                if (debugAllReplayLogs) debugLog("  SOMEHOW WE STILL HAVE A PACKET " + formatPending(next));
                 return null;
             }
-            //debugLog("  Returning runnable to generate packets: " + next.getClass().getSimpleName());
+            if (debugAllReplayLogs) debugLog("  Returning runnable to generate packets: " + next.getClass().getSimpleName());
             return next;
         }
 
         // Putting runnables last is also based on an eyeballed assumption
         // There should be less network messages than runnables
 
-        debugLog(" Nothing to return, returning null");
+        if (debugAllReplayLogs) debugLog(" Nothing to return, returning null");
         return null;
     }
 
@@ -384,6 +399,9 @@ public class GuidedPendingQueue implements PendingQueue {
      */
     private void recordEvent(Pending item) {
         if (!(item instanceof Packet))
+            return;
+
+        if (recorder.eventCount() >= maxTraceEvents)
             return;
 
         // Don't record packets that are bypassed (e.g. self-addressed src==dst, or bypass type names)

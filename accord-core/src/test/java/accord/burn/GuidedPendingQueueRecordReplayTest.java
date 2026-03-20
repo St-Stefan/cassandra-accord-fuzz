@@ -63,7 +63,6 @@ public class GuidedPendingQueueRecordReplayTest extends BurnTestBase {
 
         Range r1 = range(forHash(0, HASH_RANGE_START), forHash(0, (HASH_RANGE_END + HASH_RANGE_START) / 2));
         Range r2 = range(forHash(0, (HASH_RANGE_END + HASH_RANGE_START) / 2), forHash(0, HASH_RANGE_END));
-        // Replication factor across 5 nodes; use rf=5 so every node belongs to each shard electorate
         TopologyFactory topologyFactory = new TopologyFactory(nodeCount, r1, r2);
 
         // Record
@@ -103,7 +102,7 @@ public class GuidedPendingQueueRecordReplayTest extends BurnTestBase {
     @Test
     public void replayRecordedTrace() throws IOException {
         long seed = 123456799L;
-        int nodeCount = 5;
+        int nodeCount = 7;
         int operations = 3;
         int concurrency = 3;
 

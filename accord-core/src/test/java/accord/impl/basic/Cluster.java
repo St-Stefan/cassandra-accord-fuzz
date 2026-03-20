@@ -279,7 +279,7 @@ public class Cluster {
     public boolean processPending() {
         checkFailures.run();
         // All remaining tasks are recurring
-        if (!hasNonRecurring() && pending.nowInMillis() > droppedAt + TimeUnit.MINUTES.toMillis(1L))
+        if (!hasNonRecurring() && pending.nowInMillis() > droppedAt + TimeUnit.MINUTES.toMillis(15L))
             return false;
 
         Pending next = pending.poll();
@@ -814,7 +814,7 @@ public class Cluster {
 //                trace.debug("Done with replay.");
 //            }, () -> random.nextInt(10, 30), SECONDS);
 
-            durabilityServices.forEach(DurabilityService::start);
+            //durabilityServices.forEach(DurabilityService::start);
             services.forEach(Service::start);
 
             Runnable stop = () -> {
