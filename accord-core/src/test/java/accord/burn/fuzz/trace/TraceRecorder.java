@@ -104,13 +104,14 @@ public class TraceRecorder {
         MessageType type = message != null ? message.type() : null;
         TxnId txnId = TxnIdExtractor.extract(message);
         String messageClass = message != null ? message.getClass().getSimpleName() : "null";
+        String fieldsJson = MessageTraceJson.toJson(message);
 
         // Get and increment sequence for this tuple
         WeakMessageKey key = new WeakMessageKey(from, to, type, txnId);
         int sequence = tupleSequences.compute(key, (k, v) -> v == null ? 0 : v + 1);
 
         TraceEvent.Deliver event = new TraceEvent.Deliver(eventId, timestamp, messageId, from, to,
-                type, txnId, messageClass, requestId, replyId, sequence);
+                type, txnId, messageClass, requestId, replyId, sequence, fieldsJson);
         trace.add(event);
         return event;
     }

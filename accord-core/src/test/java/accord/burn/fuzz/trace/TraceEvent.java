@@ -60,6 +60,10 @@ public abstract class TraceEvent {
 
     public abstract boolean isDependentWith(TraceEvent other);
 
+    public String toActionString() {
+        return toString();
+    }
+
     @Nullable
     public abstract Node.Id primaryNode();
 
@@ -88,10 +92,19 @@ public abstract class TraceEvent {
         public final long replyId;
         //Sequence number within (from, to, messageType, txnId) tuple for weak matching
         public final int sequenceInTuple;
+        // Compact JSON with message-specific fields
+        public final String fieldsJson;
 
         public Deliver(long eventId, long timestamp, long messageId, Node.Id from, Node.Id to,
                        MessageType messageType, @Nullable TxnId txnId, String messageClass,
                        long requestId, long replyId, int sequenceInTuple) {
+            this(eventId, timestamp, messageId, from, to, messageType, txnId, messageClass,
+                 requestId, replyId, sequenceInTuple, "{}");
+        }
+
+        public Deliver(long eventId, long timestamp, long messageId, Node.Id from, Node.Id to,
+                       MessageType messageType, @Nullable TxnId txnId, String messageClass,
+                       long requestId, long replyId, int sequenceInTuple, String fieldsJson) {
             super(eventId, timestamp);
             this.messageId = messageId;
             this.from = Objects.requireNonNull(from, "from");
@@ -102,6 +115,7 @@ public abstract class TraceEvent {
             this.requestId = requestId;
             this.replyId = replyId;
             this.sequenceInTuple = sequenceInTuple;
+            this.fieldsJson = Objects.requireNonNull(fieldsJson, "fieldsJson");
         }
 
         @Override
@@ -141,22 +155,13 @@ public abstract class TraceEvent {
         }
 
         @Override
+        public String toActionString() {
+            return MessageTraceJson.toDeliverActionJson(from.id, to.id, messageClass, fieldsJson);
+        }
+
+        @Override
         public String toString() {
-            return String.format("Deliver{id=%d, msg=%d, %s->%s, type=%s, txn=%s, seq=%d}",
-                    eventId, messageId, from, to, messageType, txnId, sequenceInTuple);
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (!(o instanceof Deliver)) return false;
-            Deliver deliver = (Deliver) o;
-            return eventId == deliver.eventId && messageId == deliver.messageId;
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(eventId, messageId);
+            return toActionString();
         }
     }
 
@@ -234,8 +239,8 @@ public abstract class TraceEvent {
 
         @Override
         public String toString() {
-            return String.format("Drop{id=%d, msg=%d, %s->%s, type=%s, txn=%s, seq=%d}",
-                    eventId, messageId, from, to, messageType, txnId, sequenceInTuple);
+            return String.format("Drop{id=%d, %s->%s, type=%s, txn=%s, seq=%d}",
+                    eventId, from, to, messageType, txnId, sequenceInTuple);
         }
 
         @Override
