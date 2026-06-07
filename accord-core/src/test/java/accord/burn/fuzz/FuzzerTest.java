@@ -22,10 +22,6 @@ import org.junit.jupiter.api.Test;
 
 public class FuzzerTest {
 
-    /**
-     * Basic smoke test for the fuzzing loop.
-     * TODO: Remove ephemeral writes? Maybe we should fuzz the full flow
-     */
     @Test
     public void testBasicFuzzLoop() {
         Fuzzer fuzzer = new Fuzzer(
@@ -33,13 +29,34 @@ public class FuzzerTest {
                 7,      // numNodes
                 3,      // operations
                 3,      // concurrency
-                5000,      // iterations
+                5000,   // iterations
                 1,      // seedPopulationSize
                 1,      // mutationsPerTrace
-                0,       // crashQuota (no crashes for now)
-                100
+                0,      // crashQuota
+                300     // traceEventBudget
         );
+        fuzzer.run();
+    }
 
+    /**
+     * Long exploration run. Execute via Gradle CLI to avoid IDE memory pressure:
+     *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.testLongExploration"
+     */
+    @Test
+    public void testLongExploration() {
+        long time = 60 * 60 * 1000;
+        Fuzzer fuzzer = new Fuzzer(
+                42L,            // seed
+                7,              // numNodes
+                3,              // operations
+                3,              // concurrency
+                Integer.MAX_VALUE, // iterations (time-bounded instead)
+                1,              // seedPopulationSize
+                1,              // mutationsPerTrace
+                0,              // crashQuota
+                300,            // traceEventBudget
+                time       // maxDurationMs
+        );
         fuzzer.run();
     }
 }

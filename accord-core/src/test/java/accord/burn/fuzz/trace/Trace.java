@@ -20,9 +20,12 @@ package accord.burn.fuzz.trace;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -192,6 +195,79 @@ public class Trace implements Iterable<TraceEvent> {
         return new Trace(header, events.subList(startIndex, events.size()));
     }
 
+
+    /**
+     * Serialise this trace as TLA+ JSON actions.
+     *
+     * Pass 1 – assign stable integer tlaIds to each TxnId, sorted by coordinator node id.
+     * Pass 2 – emit Submit at client-deliver positions and Deliver for known message types.
+     * Pass 3? - Encode order of submitted actions explicitly
+     * @param singleArray if true, emit one JSON array [{...},{...},...,{"reset":true}]
+     *                    (localhost client); if false, emit JSONL with one [{...}] per line
+     *                    (CMD TLC client).
+     */
+    public String toTlaJson(boolean singleArray) {
+        // Pass 1: build coordinator → TxnId list, ordered by first PreAccept appearance.
+        Map<Integer, List<TxnId>> coordTxnIds = new LinkedHashMap<>();
+        for (TraceEvent event : events) {
+            if (!(event instanceof TraceEvent.Deliver)) continue;
+            TraceEvent.Deliver d = (TraceEvent.Deliver) event;
+            if (!"PreAccept".equals(d.messageClass) || d.txnId == null || d.from.id <= 0) continue;
+            List<TxnId> list = coordTxnIds.computeIfAbsent(d.from.id, k -> new ArrayList<>());
+            if (!list.contains(d.txnId)) list.add(d.txnId);
+        }
+
+        List<Integer> sortedCoords = new ArrayList<>(coordTxnIds.keySet());
+        Collections.sort(sortedCoords);
+
+        Map<TxnId, Integer> txnToTlaId = new HashMap<>();
+        int nextTlaId = 1;
+        for (int coord : sortedCoords) {
+            for (TxnId txnId : coordTxnIds.get(coord))
+                txnToTlaId.put(txnId, nextTlaId++);
+        }
+
+        Map<Integer, Iterator<TxnId>> coordIters = new HashMap<>();
+        for (Map.Entry<Integer, List<TxnId>> entry : coordTxnIds.entrySet())
+            coordIters.put(entry.getKey(), entry.getValue().iterator());
+
+        // Pass 2: collect action strings in "[{...}]" form, then format output.
+        List<String> actionLines = new ArrayList<>();
+        for (TraceEvent event : events) {
+            if (!(event instanceof TraceEvent.Deliver)) continue;
+            TraceEvent.Deliver d = (TraceEvent.Deliver) event;
+
+            if (d.from.id == -1) {
+                Iterator<TxnId> it = coordIters.get(d.to.id);
+                if (it == null || !it.hasNext()) continue;
+                Integer tlaId = txnToTlaId.get(it.next());
+                if (tlaId == null) continue;
+                actionLines.add(MessageTraceJson.toTlaSubmitLine(d.to.id, tlaId));
+            } else {
+                if (d.txnId == null) continue;
+                String tlaType = MessageTraceJson.toTlaMessageType(d.messageClass, d.fieldsJson);
+                if (tlaType == null) continue;
+                Integer tlaId = txnToTlaId.get(d.txnId);
+                if (tlaId == null) continue;
+                actionLines.add(MessageTraceJson.toTlaDeliverLine(d.from.id, d.to.id, tlaType, tlaId, d.fieldsJson));
+            }
+        }
+
+        StringBuilder sb = new StringBuilder();
+        if (singleArray) {
+            sb.append('[');
+            for (String line : actionLines) {
+                sb.append(line, 1, line.length() - 1); // strip outer [...] → {...}
+                sb.append(',');
+            }
+            sb.append("{\"reset\":true}]");
+        } else {
+            for (String line : actionLines)
+                sb.append(line).append('\n');
+            sb.append("[{\"reset\":true}]\n");
+        }
+        return sb.toString();
+    }
 
     public String toFullString() {
         StringBuilder sb = new StringBuilder();

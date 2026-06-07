@@ -21,9 +21,11 @@ package accord.burn.fuzz.trace;
 import javax.annotation.Nullable;
 
 import accord.messages.Accept;
+import accord.messages.Apply;
 import accord.messages.Commit;
 import accord.messages.Message;
 import accord.messages.PreAccept;
+import accord.messages.StableThenRead;
 import accord.primitives.TxnId;
 
 final class MessageTraceJson {
@@ -44,6 +46,72 @@ final class MessageTraceJson {
 
     private static String tlaMessageType(String messageClass) {
         return messageClass == null || "null".equals(messageClass) ? "TypeUnknown" : "Type" + messageClass;
+    }
+
+    // Java simple class name → TLA+ Deliver type for FullSpecActionMapper.
+    // fieldsJson is the stored message JSON, used to distinguish Commit from Stable
+    // (both use the same Java Commit class but different Kind enum values).
+    // Returns null for message types the spec doesn't model as Deliver actions.
+    static String toTlaMessageType(String messageClass, String fieldsJson) {
+        if (messageClass == null) return null;
+        switch (messageClass) {
+            case "PreAccept":              return "TypePreAccept";
+            case "PreAcceptOk":            return "TypePreAcceptOK";
+            case "Accept":                 return "TypeAccept";
+            case "AcceptReply":            return "TypeAcceptOK";
+            case "Commit":
+                // Stable kinds: StableFastPath, StableMediumPath, StableSlowPath, StableWithTxnAndDeps.
+                // Committed kinds: CommitSlowPath, CommitWithTxn.
+                if (fieldsJson != null && fieldsJson.contains("\"phaseq\":\"Stable"))
+                    return "TypeStable";
+                return "TypeCommit";
+            case "StableThenRead":         return "TypeStable";
+            case "BeginRecovery":          return "TypeRecover";
+            case "RecoverOk":              return "TypeRecoverOK";
+            case "ReadTxnData":            return "TypeRead";
+            case "Apply":                  return "TypeApply";
+            case "ReadOk":
+            case "ReadOkWithFutureEpoch":  return "TypeReadOk";
+            default:                       return null;
+        }
+    }
+
+    // Produces one JSONL line: [{"name":"Submit","params":{"p":<coordinator>,"id":<tlaId>}}]
+    static String toTlaSubmitLine(int coordinator, int tlaId) {
+        return "[{\"name\":\"Submit\",\"params\":{\"p\":" + coordinator + ",\"id\":" + tlaId + "}}]";
+    }
+
+    // Produces one JSONL line: [{"name":"Deliver","params":{"from":<f>,"to":<t>,"type":"<type>","id":<tlaId>}}]
+    // If fieldsJson contains a "phaseq" key it is included in the output so the mapper can
+    // distinguish fast-path (StableFastPath) from slow-path (StableSlowPath) TypeStable events.
+    static String toTlaDeliverLine(int from, int to, String tlaType, int tlaId, @Nullable String fieldsJson) {
+        StringBuilder sb = new StringBuilder(128);
+        sb.append("[{\"name\":\"Deliver\",\"params\":{\"from\":").append(from)
+          .append(",\"to\":").append(to)
+          .append(",\"type\":\"").append(tlaType).append("\"")
+          .append(",\"id\":").append(tlaId);
+        String phaseq = extractField(fieldsJson, "phaseq");
+        if (phaseq != null)
+            sb.append(",\"phaseq\":\"").append(escape(phaseq)).append("\"");
+        sb.append("}}]");
+        return sb.toString();
+    }
+
+    // Extracts the string value of a named key from a simple flat JSON object, or null if absent.
+    static @Nullable String extractField(@Nullable String fieldsJson, String key) {
+        if (fieldsJson == null) return null;
+        String needle = "\"" + key + "\":\"";
+        int idx = fieldsJson.indexOf(needle);
+        if (idx < 0) return null;
+        int start = idx + needle.length();
+        int end = start;
+        while (end < fieldsJson.length()) {
+            char c = fieldsJson.charAt(end);
+            if (c == '\\') { end += 2; continue; }
+            if (c == '"') break;
+            end++;
+        }
+        return end <= fieldsJson.length() ? fieldsJson.substring(start, end) : null;
     }
 
     static String toJson(@Nullable Message message) {
@@ -84,6 +152,8 @@ final class MessageTraceJson {
                 appendString(sb, "Dq", String.valueOf(r.deps));
             if (r.committedExecuteAt != null)
                 appendString(sb, "tq", String.valueOf(r.committedExecuteAt));
+        } else if (message instanceof StableThenRead m) {
+            appendString(sb, "phaseq", String.valueOf(m.kind));
         } else if (message instanceof Commit m) {
             appendString(sb, "b", String.valueOf(m.ballot));
             appendString(sb, "t", String.valueOf(m.executeAt));
@@ -92,6 +162,8 @@ final class MessageTraceJson {
             if (m.partialTxn() != null)
                 appendString(sb, "c", String.valueOf(m.partialTxn()));
             appendString(sb, "phaseq", String.valueOf(m.kind));
+        } else if (message instanceof Apply m) {
+            appendString(sb, "kind", m.kind.name());
         }
 
         sb.append('}');

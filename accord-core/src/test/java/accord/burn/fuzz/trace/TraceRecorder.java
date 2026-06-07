@@ -35,6 +35,8 @@ public class TraceRecorder {
     public record WeakMessageKey(Node.Id from, Node.Id to, MessageType type, @Nullable TxnId txnId) {
     }
 
+    private static final long NO_ID = Integer.MIN_VALUE;
+
     private final Trace trace;
     private final AtomicLong nextEventId = new AtomicLong(1);
     private final AtomicLong nextMessageId = new AtomicLong(1);
@@ -43,10 +45,8 @@ public class TraceRecorder {
 
     //TODO: Remove this when timeouts are gone
     private final Map<WeakMessageKey, Integer> tupleSequences = new HashMap<>();
-
-    public TraceRecorder(Trace trace) {
-        this(trace, 0);
-    }
+    // Maps request message ID → txnId so reply messages (e.g. AcceptReply) can be correlated back.
+    private final Map<Long, TxnId> requestTxnIds = new HashMap<>();
 
     public TraceRecorder(Trace trace, int maxEvents) {
         this.trace = Objects.requireNonNull(trace, "trace");
@@ -68,9 +68,6 @@ public class TraceRecorder {
         return trace;
     }
 
-    public long currentTimestamp() {
-        return logicalClock.get();
-    }
 
     public long tick() {
         return logicalClock.incrementAndGet();
@@ -103,6 +100,10 @@ public class TraceRecorder {
         long timestamp = tick();
         MessageType type = message != null ? message.type() : null;
         TxnId txnId = TxnIdExtractor.extract(message);
+        if (txnId == null && replyId != NO_ID)
+            txnId = requestTxnIds.get(replyId);
+        if (txnId != null && requestId != NO_ID)
+            requestTxnIds.put(requestId, txnId);
         String messageClass = message != null ? message.getClass().getSimpleName() : "null";
         String fieldsJson = MessageTraceJson.toJson(message);
 
@@ -167,23 +168,6 @@ public class TraceRecorder {
         long timestamp = tick();
 
         TraceEvent.Recover event = new TraceEvent.Recover(eventId, timestamp, node);
-        trace.add(event);
-        return event;
-    }
-
-    /**
-     * Record a client operation event
-     */
-    public @Nullable TraceEvent.ClientOp recordClientOp(long opId, Node.Id coordinator, @Nullable TxnId txnId, String description) {
-        if (!canRecordNextEvent())
-            return null;
-
-        long eventId = nextEventId.getAndIncrement();
-        long timestamp = tick();
-
-        TraceEvent.ClientOp event = new TraceEvent.ClientOp(
-                eventId, timestamp, opId, coordinator, txnId, description
-        );
         trace.add(event);
         return event;
     }

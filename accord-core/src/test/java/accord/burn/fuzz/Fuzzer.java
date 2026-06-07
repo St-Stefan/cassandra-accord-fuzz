@@ -18,6 +18,7 @@
 
 package accord.burn.fuzz;
 
+import java.io.BufferedWriter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -32,6 +33,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import accord.api.ProtocolModifiers.Toggles;
 import accord.burn.BurnTestBase;
 import accord.burn.fuzz.trace.GuidedPendingQueue;
 import accord.burn.fuzz.trace.Trace;
@@ -45,6 +47,7 @@ import accord.primitives.Range;
 import accord.utils.DefaultRandom;
 import accord.utils.RandomSource;
 
+import static accord.api.ProtocolModifiers.Toggles.SendStableMessages.TO_ALL;
 import static accord.impl.PrefixedIntHashKey.forHash;
 import static accord.impl.PrefixedIntHashKey.range;
 
@@ -66,16 +69,23 @@ public class Fuzzer {
     private final int operations;
     private final int concurrency;
 
+    private final long maxDurationMs;
     private final Deque<Trace> workQueue;
 
     public Fuzzer(long seed, int numNodes, int operations, int concurrency,
                   int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota) {
-        this(seed, numNodes, operations, concurrency, iterations, seedPopulationSize, mutationsPerTrace, crashQuota, 0);
+        this(seed, numNodes, operations, concurrency, iterations, seedPopulationSize, mutationsPerTrace, crashQuota, 0, 0);
     }
 
     public Fuzzer(long seed, int numNodes, int operations, int concurrency,
                   int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota,
                   int traceEventBudget) {
+        this(seed, numNodes, operations, concurrency, iterations, seedPopulationSize, mutationsPerTrace, crashQuota, traceEventBudget, 0);
+    }
+
+    public Fuzzer(long seed, int numNodes, int operations, int concurrency,
+                  int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota,
+                  int traceEventBudget, long maxDurationMs) {
         this.random = new Random(seed);
         this.baseSeed = seed;
         this.numNodes = numNodes;
@@ -86,58 +96,80 @@ public class Fuzzer {
         this.mutationsPerTrace = mutationsPerTrace;
         this.crashQuota = crashQuota;
         this.traceEventBudget = traceEventBudget;
+        this.maxDurationMs = maxDurationMs;
         this.workQueue = new ArrayDeque<>();
     }
 
     /**
-     * Run the fuzzer for the configured number of iterations.
+     * Run the fuzzer for the configured number of iterations (or until maxDurationMs elapses).
+     * All output is written to two session files rather than one file per iteration.
      */
     public void run() {
-        logger.info("=== FUZZER START === seed={}, nodes={}, ops={}, seeds={}, iterations={}, mutations/trace={}, traceBudget={}",
+        long startTime = System.currentTimeMillis();
+        String sessionId = baseSeed + "_" + startTime;
+        logger.info("=== FUZZER START === seed={}, nodes={}, ops={}, seeds={}, iterations={}, mutations/trace={}, traceBudget={}, maxDuration={}",
                     baseSeed, numNodes, operations, seedPopulationSize, iterations, mutationsPerTrace,
-                    traceEventBudget > 0 ? traceEventBudget : "unlimited");
+                    traceEventBudget > 0 ? traceEventBudget : "unlimited",
+                    maxDurationMs > 0 ? maxDurationMs + "ms" : "unlimited");
 
-        // Seed phase: generate initial population with random scheduling
-        for (int i = 0; i < seedPopulationSize; i++) {
-            logger.info("[SEED {}/{}] Recording random execution...", i + 1, seedPopulationSize);
-            Trace result = runBurnTest(null, "seed_" + i);
-            if (result != null && !result.isEmpty()) {
-                logger.info("[SEED {}/{}] Recorded {} events", i + 1, seedPopulationSize, result.size());
-                workQueue.add(result);
-            } else {
-                logger.warn("[SEED {}/{}] No trace produced", i + 1, seedPopulationSize);
-            }
+        Path dir = Path.of(System.getProperty("user.dir"), "build", "test-traces", "fuzzer");
+        try {
+            Files.createDirectories(dir);
+        } catch (IOException e) {
+            throw new RuntimeException("Cannot create trace output directory", e);
         }
 
-        // Main fuzzing loop
-        for (int i = 0; i < iterations; i++) {
-            Trace schedule = workQueue.isEmpty() ? null : workQueue.poll();
-            String mode = schedule != null ? "REPLAY (" + schedule.size() + " events)" : "RANDOM";
-            logger.info("[ITER {}/{}] {} | workQueue={}", i + 1, iterations, mode, workQueue.size());
+        Path traceFile = dir.resolve("session_" + sessionId + ".trace.txt");
+        Path jsonlFile = dir.resolve("session_" + sessionId + ".tla.jsonl");
+        Path jsonFile  = dir.resolve("session_" + sessionId + ".tla.json");
 
-            // Run with schedule (replay mode) and record the actual execution
-            Trace result = runBurnTest(schedule, "iter_" + i);
-            if (result == null || result.isEmpty()) {
-                logger.warn("[ITER {}/{}] No trace produced", i + 1, iterations);
-                continue;
+        try (BufferedWriter traceWriter = Files.newBufferedWriter(traceFile, StandardCharsets.UTF_8);
+             BufferedWriter jsonlWriter = Files.newBufferedWriter(jsonlFile, StandardCharsets.UTF_8);
+             BufferedWriter jsonWriter  = Files.newBufferedWriter(jsonFile,  StandardCharsets.UTF_8)) {
+
+            // Seed phase
+            for (int i = 0; i < seedPopulationSize; i++) {
+                logger.info("[SEED {}/{}] Recording random execution...", i + 1, seedPopulationSize);
+                Trace result = runBurnTest(null, "seed_" + i);
+                if (result != null && !result.isEmpty()) {
+                    logger.info("[SEED {}/{}] Recorded {} events", i + 1, seedPopulationSize, result.size());
+                    workQueue.add(result);
+                } else {
+                    logger.warn("[SEED {}/{}] No trace produced", i + 1, seedPopulationSize);
+                }
             }
 
-            logger.info("[ITER {}/{}] Result: {} events", i + 1, iterations, result.size());
+            // Main fuzzing loop
+            for (int i = 0; i < iterations; i++) {
+                if (maxDurationMs > 0 && System.currentTimeMillis() - startTime >= maxDurationMs) {
+                    logger.info("=== FUZZER TIME LIMIT REACHED after {} iterations ===", i);
+                    break;
+                }
 
-            // Save the actual execution trace
-            saveTrace(result, "iter" + i + "_execution");
+                Trace schedule = workQueue.isEmpty() ? null : workQueue.poll();
+                String mode = schedule != null ? "REPLAY (" + schedule.size() + " events)" : "RANDOM";
+                logger.info("[ITER {}/{}] {} | workQueue={}", i + 1, iterations, mode, workQueue.size());
 
-            // TODO: Check coverage here
-            // For now, always consider interesting and mutate
-            List<Trace> mutants = mutate(result);
-            logger.info("[ITER {}/{}] Generated {} mutants", i + 1, iterations, mutants.size());
-            // for (int m = 0; m < mutants.size(); m++) {
-            //     saveTrace(mutants.get(m), "iter" + i + "_mutant" + m);
-            // }
-            workQueue.addAll(mutants);
+                Trace result = runBurnTest(schedule, "iter_" + i);
+                if (result == null || result.isEmpty()) {
+                    logger.warn("[ITER {}/{}] No trace produced", i + 1, iterations);
+                    continue;
+                }
+
+                logger.info("[ITER {}/{}] Result: {} events", i + 1, iterations, result.size());
+                saveTrace(result, "iter" + i + "_execution", traceWriter, jsonlWriter, jsonWriter);
+
+                List<Trace> mutants = mutate(result);
+                logger.info("[ITER {}/{}] Generated {} mutants", i + 1, iterations, mutants.size());
+                workQueue.addAll(mutants);
+            }
+
+        } catch (IOException e) {
+            logger.error("Session file I/O error: {}", e.getMessage(), e);
         }
 
-        logger.info("=== FUZZER DONE === workQueue remaining: {}", workQueue.size());
+        logger.info("=== FUZZER DONE === workQueue remaining: {} | trace: {} | jsonl: {} | json: {}",
+                    workQueue.size(), traceFile, jsonlFile, jsonFile);
     }
 
     /**
@@ -157,6 +189,8 @@ public class Fuzzer {
         CrashSimulator crashes = new CrashSimulator();
         AtomicReference<GuidedPendingQueue> queueRef = new AtomicReference<>();
 
+        Toggles.setSendStableMessages(TO_ALL);
+        Toggles.setPermitLocalExecution(false);
         try {
             BurnTestBase.burn(
                 new DefaultRandom(runSeed),
@@ -297,15 +331,21 @@ public class Fuzzer {
         return nodes;
     }
 
-    private void saveTrace(Trace trace, String label) {
+    private void saveTrace(Trace trace, String label, BufferedWriter traceWriter, BufferedWriter jsonlWriter, BufferedWriter jsonWriter) {
         try {
-            Path dir = Path.of(System.getProperty("user.dir"), "build", "test-traces", "fuzzer");
-            Files.createDirectories(dir);
-            Path file = dir.resolve(label + ".trace.txt");
-            Files.writeString(file, trace.toFullString(), StandardCharsets.UTF_8);
-            logger.info("  Saved trace to {}", file);
+            traceWriter.write("=== " + label + " ===\n");
+            traceWriter.write(trace.toFullString());
+            traceWriter.write("\n\n");
+            traceWriter.flush();
+
+            jsonlWriter.write(trace.toTlaJson(false));
+            jsonlWriter.flush();
+
+            jsonWriter.write(trace.toTlaJson(true));
+            jsonWriter.write('\n');
+            jsonWriter.flush();
         } catch (IOException e) {
-            logger.warn("  Failed to save trace {}: {}", label, e.getMessage());
+            logger.warn("  Failed to append trace {}: {}", label, e.getMessage());
         }
     }
 }

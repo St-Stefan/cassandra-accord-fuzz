@@ -34,7 +34,6 @@ public abstract class TraceEvent {
         DROP,
         CRASH,
         RECOVER,
-        CLIENT_OP,
         TIMER
     }
 
@@ -345,69 +344,6 @@ public abstract class TraceEvent {
         @Override
         public int hashCode() {
             return Objects.hash(eventId, node);
-        }
-    }
-
-    /**
-     * Client operation event - a client initiated a transaction
-     */
-    public static final class ClientOp extends TraceEvent {
-        public final long opId;
-        public final Node.Id coordinator;
-        @Nullable
-        public final TxnId txnId;
-        public final String description;
-
-        public ClientOp(long eventId, long timestamp, long opId,
-                        Node.Id coordinator, @Nullable TxnId txnId, String description) {
-            super(eventId, timestamp);
-            this.opId = opId;
-            this.coordinator = Objects.requireNonNull(coordinator, "coordinator");
-            this.txnId = txnId;
-            this.description = Objects.requireNonNull(description, "description");
-        }
-
-        @Override
-        public TraceEventType getEventType() {
-            return TraceEventType.CLIENT_OP;
-        }
-
-        @Override
-        public boolean isDependentWith(TraceEvent other) {
-            if (coordinator.equals(other.primaryNode()) || coordinator.equals(other.secondaryNode()))
-                return true;
-            if (txnId != null && txnId.equals(other.txnId()))
-                return true;
-            return false;
-        }
-
-        @Override
-        public Node.Id primaryNode() {
-            return coordinator;
-        }
-
-        @Override
-        public TxnId txnId() {
-            return txnId;
-        }
-
-        @Override
-        public String toString() {
-            return String.format("ClientOp{id=%d, op=%d, coord=%s, txn=%s, desc=%s}",
-                    eventId, opId, coordinator, txnId, description);
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (!(o instanceof ClientOp)) return false;
-            ClientOp clientOp = (ClientOp) o;
-            return eventId == clientOp.eventId && opId == clientOp.opId;
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(eventId, opId);
         }
     }
 
