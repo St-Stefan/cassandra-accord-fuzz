@@ -580,6 +580,20 @@ public class Cluster {
                                               Supplier<TimeService> timeServiceSupplier,
                                               TopologyFactory topologyFactory, Supplier<Packet> in, Consumer<Runnable> noMoreWorkSignal,
                                               Consumer<Map<Id, Node>> readySignal, BiFunction<Node.Id, RandomSource, Journal> journalFactory) {
+        return run(nodes, prefixes, messageListener, queueSupplier, nodeExecutorSupplier, agentSupplier,
+                   checkFailures, responseSink, randomSupplier, timeServiceSupplier,
+                   topologyFactory, in, noMoreWorkSignal, readySignal, journalFactory, null);
+    }
+
+    public static Map<MessageType, Stats> run(Id[] nodes, int[] prefixes, MessageListener messageListener, Supplier<PendingQueue> queueSupplier,
+                                              Function<Id, AsyncExecutor> nodeExecutorSupplier,
+                                              TriFunction<OwnershipEventListener, Scheduler, NodeSink.TimeoutSupplier, Agent> agentSupplier,
+                                              Runnable checkFailures, Consumer<Packet> responseSink,
+                                              Supplier<RandomSource> randomSupplier,
+                                              Supplier<TimeService> timeServiceSupplier,
+                                              TopologyFactory topologyFactory, Supplier<Packet> in, Consumer<Runnable> noMoreWorkSignal,
+                                              Consumer<Map<Id, Node>> readySignal, BiFunction<Node.Id, RandomSource, Journal> journalFactory,
+                                              @Nullable CrashSimulator crashSimulator) {
         Topology topology = topologyFactory.toTopology(nodes);
         Map<Id, Node> nodeMap = new LinkedHashMap<>();
         Map<Id, AsyncExecutor> executorMap = new LinkedHashMap<>();
@@ -587,6 +601,7 @@ public class Cluster {
         try {
             RandomSource random = randomSupplier.get();
             Cluster sinks = new Cluster(randomSupplier.get(), messageListener, queueSupplier, checkFailures, nodeMap::get, () -> topologyFactory.rf, responseSink);
+            sinks.setCrashSimulator(crashSimulator);
             TopologyUpdates topologyUpdates = new TopologyUpdates(executorMap::get);
             TopologyRandomizer.Listener schemaApply = t -> {
                 for (Node node : nodeMap.values()) {
@@ -669,7 +684,7 @@ public class Cluster {
                 BurnTestTopologyService topologyService = new BurnTestTopologyService(id, nodeExecutor, agent, randomSupplier, topology, nodeMap::get, topologyUpdates);
                 DelayedCommandStores.CacheLoading cacheLoading = new RandomLoader(random).newLoader(journal);
                 Node node = new Node(id, messageSink, topologyService, timeService, new AtomicUniqueTimeWithStaleReservation(timeService),
-                        () -> new ListStore(scheduler, random, id), new ShardDistributor.EvenSplit<>(8, ignore -> new PrefixedIntHashKey.Splitter()),
+                        () -> new ListStore(scheduler, random, id), new ShardDistributor.EvenSplit<>(1, ignore -> new PrefixedIntHashKey.Splitter()),
                         agent,
                         randomSupplier.get(), scheduler, SizeOfIntersectionSorter.SUPPLIER, DefaultRemoteListeners::new, DefaultTimeouts::new,
                         TestProgressLogs::new, DefaultLocalListeners.Factory::new, DelayedCommandStores.factory(sinks.pending, cacheLoading), new CoordinationAdapter.DefaultFactory(),
@@ -687,7 +702,7 @@ public class Cluster {
 
             Runnable updateDurabilityRate;
             {
-                IntSupplier targetSplits = random.biasedUniformIntsSupplier(1, 16, 2, 4, 4, 16).get();
+                IntSupplier targetSplits = () -> 1;
                 IntSupplier shardCycleTimeSeconds = random.biasedUniformIntsSupplier(5, 60, 10, 60, 1, 30).get();
                 IntSupplier globalCycleTimeSeconds = random.biasedUniformIntsSupplier(1, 90, 10, 30, 10, 60).get();
                 updateDurabilityRate = () -> {

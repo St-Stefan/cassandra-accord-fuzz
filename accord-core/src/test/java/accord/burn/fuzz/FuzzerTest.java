@@ -32,8 +32,33 @@ public class FuzzerTest {
                 5000,   // iterations
                 1,      // seedPopulationSize
                 1,      // mutationsPerTrace
-                0,      // crashQuota
+                1,      // crashQuota
                 300     // traceEventBudget
+        );
+        fuzzer.run();
+    }
+
+    /**
+     * TLC-guided run. Requires a TLC server running at localhost:2023.
+     *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.testGuidedFuzz"
+     */
+    @Test
+    public void testGuidedFuzz() {
+        Fuzzer fuzzer = new Fuzzer(
+                42L,            // seed
+                7,              // numNodes
+                3,              // operations
+                1,              // concurrency
+                5000,           // iterations
+                20,              // seedPopulationSize
+                1,              // mutationsPerTrace (per-new-state multiplier)
+                1,              // crashQuota
+                500,            // traceEventBudget
+                0L,             // maxDurationMs (unlimited)
+                "localhost:2023",
+                true,           // guided (energy-based mutation)
+                700,            // maxQueueSize
+                0             // reseedFrequency
         );
         fuzzer.run();
     }
@@ -43,19 +68,45 @@ public class FuzzerTest {
      *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.testLongExploration"
      */
     @Test
-    public void testLongExploration() {
-        long time = 60 * 60 * 1000;
+    public void testLongExploration1() {
+        long time = 3* 60 * 60 * 1000;
+            Fuzzer fuzzer = new Fuzzer(
+                    42L,            // seed
+                    7,              // numNodes
+                    3,              // operations
+                    1,              // concurrency
+                    Integer.MAX_VALUE,           // iterations
+                    30,              // seedPopulationSize
+                    1,              // mutationsPerTrace (per-new-state multiplier)
+                    1,              // crashQuota
+                    500,            // traceEventBudget
+                    time,             // maxDurationMs (unlimited)
+                    "localhost:2023",
+                    false,           // guided (energy-based mutation)
+                    700,            // maxQueueSize
+                    0             // reseedFrequency
+            );
+            fuzzer.run();
+    }
+
+    @Test
+    public void testLongExploration2() {
+        long time = 3* 60 * 60 * 1000;
         Fuzzer fuzzer = new Fuzzer(
                 42L,            // seed
                 7,              // numNodes
                 3,              // operations
-                3,              // concurrency
-                Integer.MAX_VALUE, // iterations (time-bounded instead)
-                1,              // seedPopulationSize
-                1,              // mutationsPerTrace
-                0,              // crashQuota
-                300,            // traceEventBudget
-                time       // maxDurationMs
+                1,              // concurrency
+                Integer.MAX_VALUE,           // iterations
+                30,              // seedPopulationSize
+                1,              // mutationsPerTrace (per-new-state multiplier)
+                1,              // crashQuota
+                500,            // traceEventBudget
+                time,             // maxDurationMs (unlimited)
+                "localhost:2023",
+                true,           // guided (energy-based mutation)
+                700,            // maxQueueSize
+                0             // reseedFrequency
         );
         fuzzer.run();
     }

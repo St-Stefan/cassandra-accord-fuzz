@@ -207,7 +207,8 @@ public class Trace implements Iterable<TraceEvent> {
      *                    (CMD TLC client).
      */
     public String toTlaJson(boolean singleArray) {
-        // Pass 1: build coordinator → TxnId list, ordered by first PreAccept appearance.
+        // Pass 1: assign stable TLA+ ids by coordinator node order (consistent across runs),
+        // and separately compute a HLC-based rank (t) that encodes the true timestamp ordering.
         Map<Integer, List<TxnId>> coordTxnIds = new LinkedHashMap<>();
         for (TraceEvent event : events) {
             if (!(event instanceof TraceEvent.Deliver)) continue;
@@ -227,6 +228,14 @@ public class Trace implements Iterable<TraceEvent> {
                 txnToTlaId.put(txnId, nextTlaId++);
         }
 
+        // HLC-sorted rank: t=1 means the transaction with the lowest TxnId (earliest in protocol order).
+        List<TxnId> hlcSorted = new ArrayList<>(txnToTlaId.keySet());
+        Collections.sort(hlcSorted);
+        Map<TxnId, Integer> txnToTlaT = new HashMap<>();
+        int nextT = 1;
+        for (TxnId txnId : hlcSorted)
+            txnToTlaT.put(txnId, nextT++);
+
         Map<Integer, Iterator<TxnId>> coordIters = new HashMap<>();
         for (Map.Entry<Integer, List<TxnId>> entry : coordTxnIds.entrySet())
             coordIters.put(entry.getKey(), entry.getValue().iterator());
@@ -240,9 +249,11 @@ public class Trace implements Iterable<TraceEvent> {
             if (d.from.id == -1) {
                 Iterator<TxnId> it = coordIters.get(d.to.id);
                 if (it == null || !it.hasNext()) continue;
-                Integer tlaId = txnToTlaId.get(it.next());
-                if (tlaId == null) continue;
-                actionLines.add(MessageTraceJson.toTlaSubmitLine(d.to.id, tlaId));
+                TxnId txnId = it.next();
+                Integer tlaId = txnToTlaId.get(txnId);
+                Integer tlaT  = txnToTlaT.get(txnId);
+                if (tlaId == null || tlaT == null) continue;
+                actionLines.add(MessageTraceJson.toTlaSubmitLine(d.to.id, tlaId, tlaT));
             } else {
                 if (d.txnId == null) continue;
                 String tlaType = MessageTraceJson.toTlaMessageType(d.messageClass, d.fieldsJson);

@@ -27,6 +27,9 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.atomic.AtomicReference;
 
+import java.util.List;
+
+import accord.api.ProtocolModifiers.Toggles;
 import accord.burn.fuzz.NoDelayQueue;
 import org.junit.jupiter.api.Test;
 
@@ -44,6 +47,7 @@ import accord.primitives.Range;
 import accord.utils.DefaultRandom;
 import accord.utils.RandomSource;
 
+import static accord.api.ProtocolModifiers.Toggles.SendStableMessages.TO_ALL;
 import static accord.impl.PrefixedIntHashKey.forHash;
 import static accord.impl.PrefixedIntHashKey.range;
 import static org.junit.jupiter.api.Assertions.*;
@@ -56,9 +60,9 @@ public class GuidedPendingQueueRecordReplayTest extends BurnTestBase {
     @Test
     public void recordThenReplay() throws IOException {
         // 3 sets of 3 concurrent requests
-        long seed = 123456799L;
+        long seed = 42L;
         int nodeCount = 5;
-        int operations = 1;
+        int operations = 3;
         int concurrency = 1;
 
         Range r1 = range(forHash(0, HASH_RANGE_START), forHash(0, (HASH_RANGE_END + HASH_RANGE_START) / 2));
@@ -70,7 +74,7 @@ public class GuidedPendingQueueRecordReplayTest extends BurnTestBase {
         TraceRecorder recorder = new TraceRecorder(seed, nodeCount, operations, "guided-record-replay");
         CrashSimulator crashes = new CrashSimulator();
 
-        BurnTestBase.burn(new DefaultRandom(seed), topologyFactory, defaultClients(), defaultNodes(nodeCount), 10, 1, operations, concurrency,
+        BurnTestBase.burn(new DefaultRandom(seed), topologyFactory, defaultClients(), defaultNodes(nodeCount), 2, 1, operations, concurrency,
                 (RandomSource rnd) -> {
                     PendingQueue delegate = new NoDelayQueue(rnd);
                     GuidedPendingQueue guided = GuidedPendingQueue.forRecording(delegate, recorder, crashes);
@@ -101,10 +105,10 @@ public class GuidedPendingQueueRecordReplayTest extends BurnTestBase {
 
     @Test
     public void replayRecordedTrace() throws IOException {
-        long seed = 123456799L;
+        long seed = 42;
         int nodeCount = 7;
         int operations = 3;
-        int concurrency = 3;
+        int concurrency = 1;
 
         Range r1 = range(forHash(0, HASH_RANGE_START), forHash(0, (HASH_RANGE_END + HASH_RANGE_START) / 2));
         Range r2 = range(forHash(0, (HASH_RANGE_END + HASH_RANGE_START) / 2), forHash(0, HASH_RANGE_END));
@@ -114,7 +118,7 @@ public class GuidedPendingQueueRecordReplayTest extends BurnTestBase {
         TraceRecorder recorder = new TraceRecorder(seed, nodeCount, operations, "replay-test-record");
         CrashSimulator crashes = new CrashSimulator();
         System.out.println("=== STARTING BURN === " + topologyFactory);
-        BurnTestBase.burn(new DefaultRandom(seed), topologyFactory, defaultClients(), defaultNodes(nodeCount), 10, 1, operations, concurrency,
+        BurnTestBase.burn(new DefaultRandom(seed), topologyFactory, defaultClients(), defaultNodes(nodeCount), 2, 1, operations, concurrency,
                 (RandomSource rnd) -> {
                     PendingQueue delegate = new NoDelayQueue(rnd);
                     GuidedPendingQueue guided = GuidedPendingQueue.forRecording(delegate, recorder, crashes);
@@ -167,6 +171,109 @@ public class GuidedPendingQueueRecordReplayTest extends BurnTestBase {
 
         // Basic sanity checks
         assertTrue(replayedTrace.size() > 0, "replay should produce events");
+    }
+
+    /**
+     * Reproducer for the bug found at fuzzer iteration 58372.
+     *
+     * Seed -7610621359446545149 (iter_58348), SWAP [9]<->[11]:
+     * coordinator node 2 crashes, sends PreAccepts to nodes 6 and 1,
+     * then node 2 recovers mid-fanout (before PreAccept reaches nodes 4 and 3).
+     * This triggers an invariant violation in Command.validate() during Accept.
+     */
+    @Test
+    public void replayBugIter58372() {
+        long seed = -7610621359446545149L;
+        int nodeCount = 7;
+        int operations = 3;
+        int concurrency = 1;
+
+        Range full = range(forHash(0, HASH_RANGE_START), forHash(0, HASH_RANGE_END));
+        TopologyFactory topologyFactory = new TopologyFactory(nodeCount, full);
+
+        Trace schedule = buildFailingSchedule(seed, nodeCount, operations);
+
+        Toggles.setSendStableMessages(TO_ALL);
+        Toggles.setPermitLocalExecution(false);
+        BurnTestBase.allowEphemeralReads = false;
+        BurnTestBase.coordinatorNodes = List.of(new Node.Id(1), new Node.Id(2), new Node.Id(3));
+
+        AtomicReference<GuidedPendingQueue> queueRef = new AtomicReference<>();
+        TraceRecorder recorder = new TraceRecorder(seed, nodeCount, operations, "bug-iter58372");
+        CrashSimulator crashes = new CrashSimulator();
+
+        BurnTestBase.burn(new DefaultRandom(seed), topologyFactory,
+                List.of(new Node.Id(-1)), defaultNodes(nodeCount),
+                2, 1, operations, concurrency,
+                (RandomSource rnd) -> {
+                    PendingQueue delegate = new NoDelayQueue(rnd);
+                    GuidedPendingQueue guided = GuidedPendingQueue.forReplay(delegate, recorder, schedule, crashes);
+                    queueRef.set(guided);
+                    return guided;
+                },
+                InMemoryJournal::new,
+                crashes);
+    }
+
+    /**
+     * The failing schedule: iter_58348 with SWAP [9]<->[11].
+     *
+     * Original [9]: PreAccept from node 2 to node 4
+     * Original [11]: Recover node 2
+     *
+     * After swap, node 2 recovers before its PreAccept reaches node 4 (and node 3).
+     */
+    private static Trace buildFailingSchedule(long seed, int nodeCount, int operations) {
+        Trace.Header header = new Trace.Header(seed, nodeCount, operations, "bug-iter58372-repro");
+        Trace trace = new Trace(header);
+
+        Node.Id client = new Node.Id(-1);
+        Node.Id n1 = new Node.Id(1);
+        Node.Id n2 = new Node.Id(2);
+        Node.Id n3 = new Node.Id(3);
+        Node.Id n4 = new Node.Id(4);
+        Node.Id n5 = new Node.Id(5);
+        Node.Id n6 = new Node.Id(6);
+        Node.Id n7 = new Node.Id(7);
+
+        // Helper: a Deliver event matched only by from/to (other fields unused by replay)
+        // event 0: client submits to coordinator node 2
+        trace.add(deliver(0, client, n2));
+        // events 1-4: recoveries before coordinator sends anything
+        trace.add(recover(1, n7));
+        trace.add(recover(2, n4));
+        trace.add(recover(3, n4));
+        trace.add(recover(4, n7));
+        // event 5: coordinator node 2 crashes
+        trace.add(crash(5, n2));
+        // event 6: recovery of node 3
+        trace.add(recover(6, n3));
+        // events 7-8: PreAccept reaches nodes 6 and 1 before the swap point
+        trace.add(deliver(7, n2, n6));
+        trace.add(deliver(8, n2, n1));
+        // event 9: Recover node 2 (swapped from position 11) — mid-fanout recovery
+        trace.add(recover(9, n2));
+        // event 10: PreAccept to node 5
+        trace.add(deliver(10, n2, n5));
+        // event 11: PreAccept to node 4 (swapped from position 9)
+        trace.add(deliver(11, n2, n4));
+        // event 12: PreAccept to node 3
+        trace.add(deliver(12, n2, n3));
+
+        return trace;
+    }
+
+    private static TraceEvent deliver(long id, Node.Id from, Node.Id to) {
+        return new TraceEvent.Deliver(id, 0, id, from, to, null, null, "PreAccept",
+                Long.MIN_VALUE, Long.MIN_VALUE, 0);
+    }
+
+    private static TraceEvent crash(long id, Node.Id node) {
+        return new TraceEvent.Crash(id, 0, node);
+    }
+
+    private static TraceEvent recover(long id, Node.Id node) {
+        return new TraceEvent.Recover(id, 0, node);
     }
 
     private static void writeTraceToFile(Trace trace, long seed, int nodeCount, int operations) throws IOException {

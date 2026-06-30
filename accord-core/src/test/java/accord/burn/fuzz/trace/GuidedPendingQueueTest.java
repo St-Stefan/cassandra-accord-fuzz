@@ -239,12 +239,10 @@ public class GuidedPendingQueueTest {
 
             // Check statistics
             logger.info("Queue statistics: {}", guided);
-            logger.info("Delivered: {}, Dropped: {}",
-                    guided.deliveredCount(), guided.droppedCount());
+            logger.info("Delivered: {}", guided.deliveredCount());
 
-            // Runnables are not traced, so delivered/dropped should remain 0
+            // Runnables are not traced, so delivered should remain 0
             assert guided.deliveredCount() == 0 : "Expected 0 delivered events";
-            assert guided.droppedCount() == 0 : "Expected 0 dropped events";
         } finally {
             Pending.Global.clearActiveOrigin();
         }
@@ -258,12 +256,10 @@ public class GuidedPendingQueueTest {
         int delivers = trace.countByKind(TraceEvent.TraceEventType.DELIVER);
         int drops = trace.countByKind(TraceEvent.TraceEventType.DROP);
         int crashes = trace.countByKind(TraceEvent.TraceEventType.CRASH);
-        int clientOps = trace.countByKind(TraceEvent.TraceEventType.CLIENT_OP);
 
         logger.info("  Delivers: {}", delivers);
         logger.info("  Drops: {}", drops);
         logger.info("  Crashes: {}", crashes);
-        logger.info("  ClientOps: {}", clientOps);
 
         logger.info("Events:");
         for (TraceEvent event : trace) {

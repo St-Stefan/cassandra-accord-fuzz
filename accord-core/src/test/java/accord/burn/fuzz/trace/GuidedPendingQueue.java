@@ -62,13 +62,17 @@ public class GuidedPendingQueue implements PendingQueue {
     // NOTE: InformDurable (INFORM_DURABLE_REQ) seems to be part of every request, so keep it for now
     // TODO: Investigate all message types, don't eyeball here
     private static final Set<String> BYPASS_REPLAY_TYPE_NAMES = Set.of(
-            // Skip durability/garbage collection messages
+            // Durability/garbage collection messages
             "DurableBefore",
             "DurableBeforeReply",
             "GetDurableBefore",
             "SetShardDurable",
             "SetGloballyDurable",
-            "NotifyWaitingOn"
+            "NotifyWaitingOn",
+            // Progress log messages — pure liveness machinery, no consensus decisions
+            "Await",
+            "AwaitOk",
+            "AsyncAwaitComplete"
 
             //"CheckStatus",
             //"CheckStatusOk",
@@ -87,7 +91,6 @@ public class GuidedPendingQueue implements PendingQueue {
 
     //Stats
     private int deliveredCount = 0;
-    private int droppedCount = 0;
 
     /**
      * Create a GuidedPendingQueue in RECORD mode
@@ -187,12 +190,32 @@ public class GuidedPendingQueue implements PendingQueue {
         }
     }
 
+    private boolean isCrashedPacket(Packet packet) {
+        return crashSimulator != null && !crashSimulator.shouldDeliver(packet.src, packet.dst);
+    }
+
     private Pending pollRecord() {
+        // Check mailbox first for packets that can now be delivered (node may have recovered)
+        Iterator<Pending> it = mailbox.iterator();
+        while (it.hasNext()) {
+            Pending p = it.next();
+            if (p instanceof Packet && isCrashedPacket((Packet) p))
+                continue;
+            it.remove();
+            recordEvent(p);
+            return p;
+        }
+
         Pending item = delegate.poll();
         if (item == null)
             return null;
 
-        // Record the event based on the item type
+        // Hold packets for crashed nodes in the mailbox instead of dropping them
+        if (item instanceof Packet && isCrashedPacket((Packet) item)) {
+            mailbox.add(item);
+            return null;
+        }
+
         recordEvent(item);
         return item;
     }
@@ -223,6 +246,25 @@ public class GuidedPendingQueue implements PendingQueue {
         // If we have a trace to follow, look for matching packet
         if (replayTrace != null && replayIndex < replayTrace.size()) {
             TraceEvent expected = replayTrace.get(replayIndex);
+
+            // Crash/Recover are instantaneous node-level state changes — no packet to match.
+            // Apply them immediately and let the Cluster enforce the consequence on delivery.
+            if (expected instanceof TraceEvent.Crash) {
+                TraceEvent.Crash crash = (TraceEvent.Crash) expected;
+                if (crashSimulator != null) crashSimulator.crash(crash.node);
+                recorder.recordCrash(crash.node);
+                replayIndex++;
+                lastReplayChoiceTimeMillis = now;
+                return null;
+            }
+            if (expected instanceof TraceEvent.Recover) {
+                TraceEvent.Recover recover = (TraceEvent.Recover) expected;
+                if (crashSimulator != null) crashSimulator.recovered(recover.node);
+                recorder.recordRecover(recover.node);
+                replayIndex++;
+                lastReplayChoiceTimeMillis = now;
+                return null;
+            }
             if (debugAllReplayLogs) debugLog("  Looking for trace event #" + replayIndex + ": " + expected + ", count: " + pollCallCount + " calls, time: " + now + "ms, last choice at: " + lastReplayChoiceTimeMillis);
             if (debugAllReplayLogs) debugLog(" Delegate stats: " + delegate.size());
 
@@ -376,17 +418,7 @@ public class GuidedPendingQueue implements PendingQueue {
             TraceEvent.Deliver deliver = (TraceEvent.Deliver) expected;
 
             // Match on: source, dest
-            if (!packet.src.equals(deliver.from)) return false;
-            if (!packet.dst.equals(deliver.to)) return false;
-
-            return true;
-        } else if (expected instanceof TraceEvent.Drop) {
-            TraceEvent.Drop drop = (TraceEvent.Drop) expected;
-
-            if (!packet.src.equals(drop.from)) return false;
-            if (!packet.dst.equals(drop.to)) return false;
-
-            return true;
+            return packet.dst.equals(deliver.to);
         }
 
         return false;
@@ -410,16 +442,8 @@ public class GuidedPendingQueue implements PendingQueue {
 
         Packet packet = (Packet) item;
         long messageId = getMessageId(packet);
-
-        boolean shouldDrop = crashSimulator != null && !crashSimulator.shouldDeliver(packet.src, packet.dst);
-
-        if (shouldDrop) {
-            recorder.recordDrop(messageId, packet.src, packet.dst, packet.message);
-            droppedCount++;
-        } else {
-            recorder.recordDeliver(messageId, packet.src, packet.dst, packet.message, packet.requestId, packet.replyId);
-            deliveredCount++;
-        }
+        recorder.recordDeliver(messageId, packet.src, packet.dst, packet.message, packet.requestId, packet.replyId);
+        deliveredCount++;
     }
 
     @Override
@@ -492,17 +516,13 @@ public class GuidedPendingQueue implements PendingQueue {
         return deliveredCount;
     }
 
-    public int droppedCount() {
-        return droppedCount;
-    }
-
     public boolean isReplayComplete() {
         return mode == Mode.REPLAY && replayTrace != null && replayIndex >= replayTrace.size();
     }
 
     @Override
     public String toString() {
-        return String.format("GuidedPendingQueue{mode=%s, delivered=%d, dropped=%d, replayIdx=%d}",
-                mode, deliveredCount, droppedCount, replayIndex);
+        return String.format("GuidedPendingQueue{mode=%s, delivered=%d, mailbox=%d, replayIdx=%d}",
+                mode, deliveredCount, mailbox.size(), replayIndex);
     }
 }

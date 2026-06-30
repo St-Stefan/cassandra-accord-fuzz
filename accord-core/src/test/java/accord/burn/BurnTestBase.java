@@ -71,6 +71,9 @@ import accord.burn.random.FrequentLargeRange;
 import accord.impl.MessageListener;
 import accord.impl.PrefixedIntHashKey;
 import accord.impl.TopologyFactory;
+import javax.annotation.Nullable;
+
+import accord.burn.fuzz.CrashSimulator;
 import accord.impl.basic.Cluster;
 import accord.impl.basic.Cluster.Stats;
 import accord.impl.basic.InMemoryJournal;
@@ -137,6 +140,11 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 public class BurnTestBase
 {
     private static final Logger logger = LoggerFactory.getLogger(BurnTestBase.class);
+
+    public static volatile boolean allowEphemeralReads = true;
+    // When non-null, restricts transaction coordinator selection to this subset of nodes.
+    // The full node list still forms the cluster; this only affects which nodes submit transactions.
+    public static volatile List<Id> coordinatorNodes = null;
 
     /**
      * Min hash value for the test domain, this value must be respected by the hash function
@@ -212,7 +220,8 @@ public class BurnTestBase
         {
             int finalCount = count;
             Id client = clients.get(random.nextInt(clients.size()));
-            Id node = nodes.get(random.nextInt(nodes.size()));
+            List<Id> coordinatorPool = coordinatorNodes != null ? coordinatorNodes : nodes;
+            Id node = coordinatorPool.get(random.nextInt(coordinatorPool.size()));
 
             boolean isRangeQuery = random.decide(rangeRatio);
             String description;
@@ -242,7 +251,7 @@ public class BurnTestBase
                     boolean isWrite = random.nextBoolean();
                     int readCount = 1 + random.nextInt(2);
                     int writeCount = isWrite ? 1 + random.nextInt(2) : 0;
-                    Kind kind = isWrite ? Kind.Write : readCount == 1 ? EphemeralRead : Kind.Read;
+                    Kind kind = isWrite ? Kind.Write : (allowEphemeralReads && readCount == 1) ? EphemeralRead : Kind.Read;
 
                     TreeSet<Key> requestKeys = new TreeSet<>();
                     IntHashSet readValues = new IntHashSet();
@@ -413,6 +422,11 @@ public class BurnTestBase
 
     public static void burn(RandomSource random, TopologyFactory topologyFactory, List<Id> clients, List<Id> nodes, int keyCount, int prefixCount, int operations, int concurrency, Function<RandomSource, PendingQueue> queueFactory, BiFunction<Node.Id, RandomSource, Journal> journalFactory)
     {
+        burn(random, topologyFactory, clients, nodes, keyCount, prefixCount, operations, concurrency, queueFactory, journalFactory, null);
+    }
+
+    public static void burn(RandomSource random, TopologyFactory topologyFactory, List<Id> clients, List<Id> nodes, int keyCount, int prefixCount, int operations, int concurrency, Function<RandomSource, PendingQueue> queueFactory, BiFunction<Node.Id, RandomSource, Journal> journalFactory, @Nullable CrashSimulator crashSimulator)
+    {
         PendingQueue pendingQueue = queueFactory.apply(random.fork());
         List<Throwable> failures = Collections.synchronizedList(new ArrayList<>());
         Thread.currentThread().setUncaughtExceptionHandler((th, fail) -> {
@@ -575,7 +589,8 @@ public class BurnTestBase
                                           topologyFactory, initialRequests::poll,
                                           onSubmitted::set,
                                           ignore -> {},
-                                          journalFactory);
+                                          journalFactory,
+                                          crashSimulator);
             verifier.close();
         }
         catch (Throwable t)

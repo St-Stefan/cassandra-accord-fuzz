@@ -76,9 +76,10 @@ final class MessageTraceJson {
         }
     }
 
-    // Produces one JSONL line: [{"name":"Submit","params":{"p":<coordinator>,"id":<tlaId>}}]
-    static String toTlaSubmitLine(int coordinator, int tlaId) {
-        return "[{\"name\":\"Submit\",\"params\":{\"p\":" + coordinator + ",\"id\":" + tlaId + "}}]";
+    // Produces one JSONL line: [{"name":"Submit","params":{"p":<coordinator>,"id":<tlaId>,"t":<tlaT>}}]
+    // id: stable coordinator-order identity; t: HLC-sorted rank (1 = earliest TxnId).
+    static String toTlaSubmitLine(int coordinator, int tlaId, int tlaT) {
+        return "[{\"name\":\"Submit\",\"params\":{\"p\":" + coordinator + ",\"id\":" + tlaId + ",\"t\":" + tlaT + "}}]";
     }
 
     // Produces one JSONL line: [{"name":"Deliver","params":{"from":<f>,"to":<t>,"type":"<type>","id":<tlaId>}}]

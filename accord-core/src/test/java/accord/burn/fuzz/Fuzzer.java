@@ -20,9 +20,13 @@ package accord.burn.fuzz;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -71,6 +75,10 @@ public class Fuzzer {
 
     private final long maxDurationMs;
     private final Deque<Trace> workQueue;
+    private final TlcGuider guider;
+    private final boolean guided;
+    private final int maxQueueSize;
+    private final int reseedFrequency;
 
     public Fuzzer(long seed, int numNodes, int operations, int concurrency,
                   int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota) {
@@ -86,6 +94,13 @@ public class Fuzzer {
     public Fuzzer(long seed, int numNodes, int operations, int concurrency,
                   int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota,
                   int traceEventBudget, long maxDurationMs) {
+        this(seed, numNodes, operations, concurrency, iterations, seedPopulationSize,
+             mutationsPerTrace, crashQuota, traceEventBudget, maxDurationMs, null, false, Integer.MAX_VALUE, 0);
+    }
+
+    public Fuzzer(long seed, int numNodes, int operations, int concurrency,
+                  int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota,
+                  int traceEventBudget, long maxDurationMs, String tlcAddr, boolean guided, int maxQueueSize, int reseedFrequency) {
         this.random = new Random(seed);
         this.baseSeed = seed;
         this.numNodes = numNodes;
@@ -98,6 +113,10 @@ public class Fuzzer {
         this.traceEventBudget = traceEventBudget;
         this.maxDurationMs = maxDurationMs;
         this.workQueue = new ArrayDeque<>();
+        this.guider = tlcAddr != null ? new TlcGuider(tlcAddr) : null;
+        this.guided = guided;
+        this.maxQueueSize = maxQueueSize;
+        this.reseedFrequency = reseedFrequency;
     }
 
     /**
@@ -106,7 +125,7 @@ public class Fuzzer {
      */
     public void run() {
         long startTime = System.currentTimeMillis();
-        String sessionId = baseSeed + "_" + startTime;
+        String sessionId = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HHmm_ddMM")) + "_seed" + baseSeed;
         logger.info("=== FUZZER START === seed={}, nodes={}, ops={}, seeds={}, iterations={}, mutations/trace={}, traceBudget={}, maxDuration={}",
                     baseSeed, numNodes, operations, seedPopulationSize, iterations, mutationsPerTrace,
                     traceEventBudget > 0 ? traceEventBudget : "unlimited",
@@ -119,18 +138,31 @@ public class Fuzzer {
             throw new RuntimeException("Cannot create trace output directory", e);
         }
 
-        Path traceFile = dir.resolve("session_" + sessionId + ".trace.txt");
-        Path jsonlFile = dir.resolve("session_" + sessionId + ".tla.jsonl");
-        Path jsonFile  = dir.resolve("session_" + sessionId + ".tla.json");
+        Path traceFile      = dir.resolve("session_" + sessionId + ".trace.txt");
+        Path jsonlFile      = dir.resolve("session_" + sessionId + ".tla.jsonl");
+        Path jsonFile       = dir.resolve("session_" + sessionId + ".tla.json");
+        Path csvFile        = dir.resolve("session_" + sessionId + ".coverage.csv");
+        Path pendingFile    = dir.resolve("session_" + sessionId + ".pending.txt");
+        Path repopulateFile = dir.resolve("session_" + sessionId + ".repopulate.csv");
+        Path errorsFile     = dir.resolve("session_" + sessionId + ".errors.csv");
 
-        try (BufferedWriter traceWriter = Files.newBufferedWriter(traceFile, StandardCharsets.UTF_8);
-             BufferedWriter jsonlWriter = Files.newBufferedWriter(jsonlFile, StandardCharsets.UTF_8);
-             BufferedWriter jsonWriter  = Files.newBufferedWriter(jsonFile,  StandardCharsets.UTF_8)) {
+        try (BufferedWriter traceWriter      = Files.newBufferedWriter(traceFile,      StandardCharsets.UTF_8);
+             BufferedWriter jsonlWriter      = Files.newBufferedWriter(jsonlFile,      StandardCharsets.UTF_8);
+             BufferedWriter jsonWriter       = Files.newBufferedWriter(jsonFile,       StandardCharsets.UTF_8);
+             BufferedWriter csvWriter        = Files.newBufferedWriter(csvFile,        StandardCharsets.UTF_8);
+             BufferedWriter pendingWriter    = Files.newBufferedWriter(pendingFile,    StandardCharsets.UTF_8);
+             BufferedWriter repopulateWriter = Files.newBufferedWriter(repopulateFile, StandardCharsets.UTF_8);
+             BufferedWriter errorsWriter     = Files.newBufferedWriter(errorsFile,     StandardCharsets.UTF_8)) {
+
+            if (guider != null)
+                csvWriter.write("iteration,unique_abstract_states\n");
+            repopulateWriter.write("iteration\n");
+            errorsWriter.write("run_id,seed,exception_class,full_stack_trace\n");
 
             // Seed phase
             for (int i = 0; i < seedPopulationSize; i++) {
                 logger.info("[SEED {}/{}] Recording random execution...", i + 1, seedPopulationSize);
-                Trace result = runBurnTest(null, "seed_" + i);
+                Trace result = runBurnTest(null, "seed_" + i, errorsWriter);
                 if (result != null && !result.isEmpty()) {
                     logger.info("[SEED {}/{}] Recorded {} events", i + 1, seedPopulationSize, result.size());
                     workQueue.add(result);
@@ -146,11 +178,28 @@ public class Fuzzer {
                     break;
                 }
 
-                Trace schedule = workQueue.isEmpty() ? null : workQueue.poll();
+                if (reseedFrequency > 0 && i > 0 && i % reseedFrequency == 0) {
+                    logger.info("[SEED] Iteration {}: clearing workQueue and seeding", i);
+                    workQueue.clear();
+                    for (int s = 0; s < seedPopulationSize; s++) {
+                        Trace seed = runBurnTest(null, "seed_" + i + "_" + s, errorsWriter);
+                        if (seed != null && !seed.isEmpty())
+                            workQueue.add(seed);
+                    }
+                }
+
+                boolean queueEmpty = workQueue.isEmpty();
+                Trace schedule = queueEmpty ? null : workQueue.poll();
                 String mode = schedule != null ? "REPLAY (" + schedule.size() + " events)" : "RANDOM";
                 logger.info("[ITER {}/{}] {} | workQueue={}", i + 1, iterations, mode, workQueue.size());
 
-                Trace result = runBurnTest(schedule, "iter_" + i);
+                if (queueEmpty)
+                    writeRepopulate(i, repopulateWriter);
+
+                if (schedule != null)
+                    savePending(schedule, "iter_" + i, pendingWriter);
+
+                Trace result = runBurnTest(schedule, "iter_" + i, errorsWriter);
                 if (result == null || result.isEmpty()) {
                     logger.warn("[ITER {}/{}] No trace produced", i + 1, iterations);
                     continue;
@@ -159,24 +208,43 @@ public class Fuzzer {
                 logger.info("[ITER {}/{}] Result: {} events", i + 1, iterations, result.size());
                 saveTrace(result, "iter" + i + "_execution", traceWriter, jsonlWriter, jsonWriter);
 
-                List<Trace> mutants = mutate(result);
-                logger.info("[ITER {}/{}] Generated {} mutants", i + 1, iterations, mutants.size());
-                workQueue.addAll(mutants);
+                if (guider != null) {
+                    int numNewStates = guider.check(result);
+                    csvWriter.write(i + "," + guider.totalSeenStates() + "\n");
+                    csvWriter.flush();
+                    if (guided && numNewStates > 0) {
+                        int count = Math.max(0, Math.min(numNewStates * mutationsPerTrace, maxQueueSize - workQueue.size()));
+                        List<Trace> mutants = mutate(result, count);
+                        logger.info("[ITER {}/{}] TLC: {} new states → {} mutants | totalSeen={}", i + 1, iterations, numNewStates, mutants.size(), guider.totalSeenStates());
+                        workQueue.addAll(mutants);
+                    } else if (guided) {
+                        logger.debug("[ITER {}/{}] TLC: no new states, skipping mutation", i + 1, iterations);
+                    }
+                }
+                if (!guided || guider == null) {
+                    List<Trace> mutants = mutate(result);
+                    logger.info("[ITER {}/{}] Generated {} mutants", i + 1, iterations, mutants.size());
+                    workQueue.addAll(mutants);
+                }
             }
 
         } catch (IOException e) {
             logger.error("Session file I/O error: {}", e.getMessage(), e);
         }
 
-        logger.info("=== FUZZER DONE === workQueue remaining: {} | trace: {} | jsonl: {} | json: {}",
-                    workQueue.size(), traceFile, jsonlFile, jsonFile);
+        if (guider != null)
+            logger.info("=== FUZZER DONE === totalSeenStates={} | workQueue remaining: {} | trace: {} | jsonl: {} | json: {} | coverage: {} | pending: {} | repopulate: {} | errors: {}",
+                        guider.totalSeenStates(), workQueue.size(), traceFile, jsonlFile, jsonFile, csvFile, pendingFile, repopulateFile, errorsFile);
+        else
+            logger.info("=== FUZZER DONE === workQueue remaining: {} | trace: {} | jsonl: {} | json: {} | pending: {} | repopulate: {} | errors: {}",
+                        workQueue.size(), traceFile, jsonlFile, jsonFile, pendingFile, repopulateFile, errorsFile);
     }
 
     /**
      * Run a burn test, optionally guided by a schedule.
      * Always records the resulting trace.
      */
-    private Trace runBurnTest(Trace schedule, String runId) {
+    private Trace runBurnTest(Trace schedule, String runId, BufferedWriter errorsWriter) {
         // When replaying, reuse the original seed so burn() generates the same transactions
         long runSeed = schedule != null ? schedule.header().seed() : baseSeed + random.nextLong();
         logger.info("  [{}] runSeed={}, mode={}", runId, runSeed, schedule == null ? "RECORD" : "REPLAY");
@@ -191,13 +259,19 @@ public class Fuzzer {
 
         Toggles.setSendStableMessages(TO_ALL);
         Toggles.setPermitLocalExecution(false);
+        BurnTestBase.allowEphemeralReads = false;
+        // Fixed coordinator pool: only nodes [1..operations] ever submit transactions.
+        // Remaining nodes still participate in consensus/replication but never coordinate.
+        // This prevents reseeds from introducing new coordinator identities as fake TLC state variation.
+        // Alternative: round-robin (count % operations) in BurnTestBase.generate() for fully deterministic assignment.
+        BurnTestBase.coordinatorNodes = defaultNodes(operations);
         try {
             BurnTestBase.burn(
                 new DefaultRandom(runSeed),
                 topologyFactory,
                 defaultClients(),
                 defaultNodes(numNodes),
-                10, // keys
+                2, // keys (2 = minimum to avoid infinite loop in randomKey; ensures near-total overlap)
                 1,  // prefixes
                 operations,
                 concurrency,
@@ -213,25 +287,32 @@ public class Fuzzer {
                     queueRef.set(guided);
                     return guided;
                 },
-                InMemoryJournal::new
+                InMemoryJournal::new,
+                crashes
             );
-        } catch (Exception e) {
-            logger.error("  [{}] Burn test failed: {}", runId, e.getMessage(), e);
+        } catch (Throwable t) {
+            logger.error("  [{}] Burn test failed: {}", runId, t.getMessage(), t);
+            writeError(runId, runSeed, t, errorsWriter);
             return null;
+        } finally {
+            BurnTestBase.allowEphemeralReads = true;
         }
 
         return recorder.trace();
     }
 
     public List<Trace> mutate(Trace schedule) {
+        return mutate(schedule, mutationsPerTrace);
+    }
+
+    private List<Trace> mutate(Trace schedule, int count) {
         List<Trace> mutants = new ArrayList<>();
-        for (int i = 0; i < mutationsPerTrace; i++) {
+        for (int i = 0; i < count; i++) {
             Trace mutant = applyRandomMutation(schedule);
-            if (mutant != null) {
+            if (mutant != null)
                 mutants.add(mutant);
-            }
         }
-        logger.info("  Mutated {}/{} (from {} events)", mutants.size(), mutationsPerTrace, schedule.size());
+        logger.info("  Mutated {}/{} (from {} events)", mutants.size(), count, schedule.size());
         return mutants;
     }
 
@@ -245,16 +326,17 @@ public class Fuzzer {
         int mutationType = random.nextInt(3);
         String[] names = {"SWAP", "CRASH", "RESTART"};
         logger.info("    Attempting mutation: {}", names[mutationType]);
-        switch (mutationType) {
-            case 0:
-                return swapEvents(schedule, events);
-            case 1:
-                return swapEvents(schedule, events);
-            case 2:
-                return swapEvents(schedule, events);
-            default:
-                return null;
+        Trace result = switch (mutationType) {
+            case 0 -> swapEvents(schedule, events);
+            case 1 -> insertCrash(schedule, events);
+            case 2 -> insertRestart(schedule, events);
+            default -> null;
+        };
+        if (result == null && mutationType != 0) {
+            logger.info("    Falling back to SWAP");
+            result = swapEvents(schedule, events);
         }
+        return result;
     }
 
     private static final Node.Id CLIENT_NODE = new Node.Id(-1);
@@ -308,10 +390,30 @@ public class Fuzzer {
     }
 
     private Trace insertRestart(Trace schedule, List<TraceEvent> events) {
-        int position = random.nextInt(events.size());
-        Node.Id node = new Node.Id(1 + random.nextInt(numNodes));
+        // Collect nodes that have a Crash with no subsequent Recover (still down at end of trace)
+        List<Node.Id> crashedNodes = new ArrayList<>();
+        for (TraceEvent e : events) {
+            if (e.getEventType() == TraceEvent.TraceEventType.CRASH)
+                crashedNodes.add(((TraceEvent.Crash) e).node);
+            else if (e.getEventType() == TraceEvent.TraceEventType.RECOVER)
+                crashedNodes.remove(((TraceEvent.Recover) e).node);
+        }
+        if (crashedNodes.isEmpty()) {
+            logger.info("    RESTART skipped: no crashed nodes in trace");
+            return null;
+        }
+
+        Node.Id node = crashedNodes.get(random.nextInt(crashedNodes.size()));
+        // Insert after the last Crash for this node
+        int lastCrashPos = 0;
+        for (int i = 0; i < events.size(); i++) {
+            if (events.get(i).getEventType() == TraceEvent.TraceEventType.CRASH
+                    && ((TraceEvent.Crash) events.get(i)).node.equals(node))
+                lastCrashPos = i;
+        }
+        int position = lastCrashPos + 1 + (events.size() > lastCrashPos + 1 ? random.nextInt(events.size() - lastCrashPos - 1) : 0);
         long eventId = events.stream().mapToLong(e -> e.eventId).max().orElse(0) + 1;
-        long timestamp = events.get(position).timestamp;
+        long timestamp = events.get(position - 1).timestamp;
 
         TraceEvent.Recover restart = new TraceEvent.Recover(eventId, timestamp, node);
         events.add(position, restart);
@@ -329,6 +431,39 @@ public class Fuzzer {
             nodes.add(new Node.Id(i));
         }
         return nodes;
+    }
+
+    private void writeError(String runId, long seed, Throwable t, BufferedWriter errorsWriter) {
+        try {
+            StringWriter sw = new StringWriter();
+            t.printStackTrace(new PrintWriter(sw));
+            // RFC 4180: wrap in double-quotes, escape internal double-quotes by doubling them
+            String quotedTrace = "\"" + sw.toString().replace("\"", "\"\"") + "\"";
+            errorsWriter.write(runId + "," + seed + "," + t.getClass().getName() + "," + quotedTrace + "\n");
+            errorsWriter.flush();
+        } catch (IOException e) {
+            logger.warn("  Failed to write error entry for {}: {}", runId, e.getMessage());
+        }
+    }
+
+    private void writeRepopulate(int iteration, BufferedWriter repopulateWriter) {
+        try {
+            repopulateWriter.write(iteration + "\n");
+            repopulateWriter.flush();
+        } catch (IOException e) {
+            logger.warn("  Failed to write repopulate entry for iteration {}: {}", iteration, e.getMessage());
+        }
+    }
+
+    private void savePending(Trace schedule, String label, BufferedWriter pendingWriter) {
+        try {
+            pendingWriter.write("=== PENDING " + label + " ===\n");
+            pendingWriter.write(schedule.toFullString());
+            pendingWriter.write("\n\n");
+            pendingWriter.flush();
+        } catch (IOException e) {
+            logger.warn("  Failed to append pending schedule {}: {}", label, e.getMessage());
+        }
     }
 
     private void saveTrace(Trace trace, String label, BufferedWriter traceWriter, BufferedWriter jsonlWriter, BufferedWriter jsonWriter) {
