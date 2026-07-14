@@ -58,7 +58,7 @@ public class FuzzerTest {
                 "localhost:2023",
                 true,           // guided (energy-based mutation)
                 700,            // maxQueueSize
-                0             // reseedFrequency
+                1000             // reseedFrequency
         );
         fuzzer.run();
     }
@@ -69,20 +69,21 @@ public class FuzzerTest {
      */
     @Test
     public void testLongExploration1() {
-        long time = 3* 60 * 60 * 1000;
+        long time = 12* 60 * 60 * 1000;
             Fuzzer fuzzer = new Fuzzer(
-                    42L,            // seed
+                    123L,            // seed
                     7,              // numNodes
                     3,              // operations
                     1,              // concurrency
                     Integer.MAX_VALUE,           // iterations
-                    30,              // seedPopulationSize
+                    40,              // seedPopulationSize
                     1,              // mutationsPerTrace (per-new-state multiplier)
                     1,              // crashQuota
                     500,            // traceEventBudget
                     time,             // maxDurationMs (unlimited)
                     "localhost:2023",
                     false,           // guided (energy-based mutation)
+
                     700,            // maxQueueSize
                     0             // reseedFrequency
             );
@@ -91,14 +92,14 @@ public class FuzzerTest {
 
     @Test
     public void testLongExploration2() {
-        long time = 3* 60 * 60 * 1000;
+        long time = 8* 60 * 60 * 1000;
         Fuzzer fuzzer = new Fuzzer(
-                42L,            // seed
+                123L,            // seed
                 7,              // numNodes
                 3,              // operations
                 1,              // concurrency
                 Integer.MAX_VALUE,           // iterations
-                30,              // seedPopulationSize
+                40,              // seedPopulationSize
                 1,              // mutationsPerTrace (per-new-state multiplier)
                 1,              // crashQuota
                 500,            // traceEventBudget

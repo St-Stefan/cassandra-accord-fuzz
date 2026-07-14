@@ -29,6 +29,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
 import java.util.Random;
@@ -172,24 +173,22 @@ public class Fuzzer {
             }
 
             // Main fuzzing loop
-            for (int i = 0; i < iterations; i++) {
+            for (int i =
+                 0; i < iterations; i++) {
                 if (maxDurationMs > 0 && System.currentTimeMillis() - startTime >= maxDurationMs) {
                     logger.info("=== FUZZER TIME LIMIT REACHED after {} iterations ===", i);
                     break;
                 }
 
-                if (reseedFrequency > 0 && i > 0 && i % reseedFrequency == 0) {
-                    logger.info("[SEED] Iteration {}: clearing workQueue and seeding", i);
-                    workQueue.clear();
-                    for (int s = 0; s < seedPopulationSize; s++) {
-                        Trace seed = runBurnTest(null, "seed_" + i + "_" + s, errorsWriter);
-                        if (seed != null && !seed.isEmpty())
-                            workQueue.add(seed);
-                    }
-                }
-
                 boolean queueEmpty = workQueue.isEmpty();
-                Trace schedule = queueEmpty ? null : workQueue.poll();
+                Trace schedule = null;
+                if (queueEmpty) {
+                    Trace fresh = runBurnTest(null, "reseed_" + i, errorsWriter);
+                    if (fresh != null && !fresh.isEmpty())
+                        schedule = generateRandomSeed(fresh);
+                } else {
+                    schedule = workQueue.poll();
+                }
                 String mode = schedule != null ? "REPLAY (" + schedule.size() + " events)" : "RANDOM";
                 logger.info("[ITER {}/{}] {} | workQueue={}", i + 1, iterations, mode, workQueue.size());
 
@@ -225,6 +224,16 @@ public class Fuzzer {
                     List<Trace> mutants = mutate(result);
                     logger.info("[ITER {}/{}] Generated {} mutants", i + 1, iterations, mutants.size());
                     workQueue.addAll(mutants);
+                }
+
+                if (reseedFrequency > 0 && i > 0 && i % reseedFrequency == 0) {
+                    logger.info("[RESEED] Iteration {}: generating {} random seeds", i, seedPopulationSize);
+                    workQueue.clear();
+                    for (int s = 0; s < seedPopulationSize; s++) {
+                        Trace fresh = runBurnTest(null, "reseed_" + i + "_" + s, errorsWriter);
+                        if (fresh != null && !fresh.isEmpty())
+                            workQueue.add(generateRandomSeed(fresh));
+                    }
                 }
             }
 
@@ -314,6 +323,69 @@ public class Fuzzer {
         }
         logger.info("  Mutated {}/{} (from {} events)", mutants.size(), count, schedule.size());
         return mutants;
+    }
+
+    /**
+     * Generate a random seed trace in the style of ModelFuzz:
+     * - keep client submit events (from=-1) to preserve transaction identity
+     * - fill the rest of the schedule with synthetic Deliver events targeting random nodes
+     * - interleave submits at random positions, preserving their relative order
+     * - apply one crash/restart mutation
+     */
+    private Trace generateRandomSeed(Trace base) {
+        List<TraceEvent> submits = new ArrayList<>();
+        for (TraceEvent e : base.events()) {
+            if (e instanceof TraceEvent.Deliver) {
+                TraceEvent.Deliver d = (TraceEvent.Deliver) e;
+                if (d.from.id == -1)
+                    submits.add(e);
+            }
+        }
+
+        int numSynthetic = Math.max(1, (traceEventBudget > 0 ? traceEventBudget : base.size()) - 20);
+        List<TraceEvent> synthetic = new ArrayList<>(numSynthetic);
+        long eventId = 1;
+        long ts = 1;
+        for (int k = 0; k < numSynthetic; k++) {
+            Node.Id to = new Node.Id(1 + random.nextInt(numNodes));
+            synthetic.add(new TraceEvent.Deliver(eventId++, ts++, eventId, new Node.Id(0), to,
+                    null, null, "Synthetic", Integer.MIN_VALUE, Integer.MIN_VALUE, 0, "{}"));
+        }
+        Collections.shuffle(synthetic, random);
+
+        // Insert client submits at random positions, preserving their relative order
+        List<TraceEvent> events = new ArrayList<>(synthetic);
+        for (TraceEvent submit : submits) {
+            int pos = events.isEmpty() ? 0 : random.nextInt(events.size() + 1);
+            events.add(pos, submit);
+        }
+
+        // Ensure the first event is a client submit
+        boolean firstIsSubmit = !events.isEmpty() && events.get(0) instanceof TraceEvent.Deliver
+                && ((TraceEvent.Deliver) events.get(0)).from.id == -1;
+        if (!firstIsSubmit) {
+            for (int k = 1; k < events.size(); k++) {
+                TraceEvent e = events.get(k);
+                if (e instanceof TraceEvent.Deliver && ((TraceEvent.Deliver) e).from.id == -1) {
+                    events.add(0, events.remove(k));
+                    break;
+                }
+            }
+        }
+
+        Trace seed = new Trace(base.header(), events);
+
+        // Add one crash/restart pair for variety
+        List<TraceEvent> withCrash = new ArrayList<>(seed.events());
+        Trace afterCrash = insertCrash(seed, withCrash);
+        if (afterCrash != null) {
+            List<TraceEvent> withRestart = new ArrayList<>(afterCrash.events());
+            Trace afterRestart = insertRestart(afterCrash, withRestart);
+            if (afterRestart != null)
+                return afterRestart;
+            return afterCrash;
+        }
+        return seed;
     }
 
     private Trace applyRandomMutation(Trace schedule) {
@@ -468,10 +540,10 @@ public class Fuzzer {
 
     private void saveTrace(Trace trace, String label, BufferedWriter traceWriter, BufferedWriter jsonlWriter, BufferedWriter jsonWriter) {
         try {
-            traceWriter.write("=== " + label + " ===\n");
-            traceWriter.write(trace.toFullString());
-            traceWriter.write("\n\n");
-            traceWriter.flush();
+            // traceWriter.write("=== " + label + " ===\n");
+            // traceWriter.write(trace.toFullString());
+            // traceWriter.write("\n\n");
+            // traceWriter.flush();
 
             jsonlWriter.write(trace.toTlaJson(false));
             jsonlWriter.flush();
