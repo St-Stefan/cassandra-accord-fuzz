@@ -45,8 +45,19 @@ public class TraceRecorder {
 
     //TODO: Remove this when timeouts are gone
     private final Map<WeakMessageKey, Integer> tupleSequences = new HashMap<>();
-    // Maps request message ID → txnId so reply messages (e.g. AcceptReply) can be correlated back.
-    private final Map<Long, TxnId> requestTxnIds = new HashMap<>();
+
+    /**
+     * requestId (and replyId, which refers back to a requestId) is not globally unique - it comes
+     * from a per-node counter (NodeSink.nextMessageId), so two different nodes' requests can carry
+     * the same numeric id. Keying this map by requestId alone let unrelated nodes' cache entries
+     * collide and silently mis-attribute replies with no txnId of their own (e.g. AcceptReply,
+     * ApplyReply) to the wrong transaction. Scoping the key by the request's sender node fixes it;
+     * a reply's `to` is always the node that sent the original request (see Packet's reply ctor).
+     */
+    private record RequestKey(Node.Id node, long requestId) {}
+    // Maps (sender node, request message ID) → txnId so reply messages (e.g. AcceptReply) can be
+    // correlated back.
+    private final Map<RequestKey, TxnId> requestTxnIds = new HashMap<>();
 
     public TraceRecorder(Trace trace, int maxEvents) {
         this.trace = Objects.requireNonNull(trace, "trace");
@@ -101,9 +112,9 @@ public class TraceRecorder {
         MessageType type = message != null ? message.type() : null;
         TxnId txnId = TxnIdExtractor.extract(message);
         if (txnId == null && replyId != NO_ID)
-            txnId = requestTxnIds.get(replyId);
+            txnId = requestTxnIds.get(new RequestKey(to, replyId));
         if (txnId != null && requestId != NO_ID)
-            requestTxnIds.put(requestId, txnId);
+            requestTxnIds.put(new RequestKey(from, requestId), txnId);
         String messageClass = message != null ? message.getClass().getSimpleName() : "null";
         String fieldsJson = MessageTraceJson.toJson(message);
 

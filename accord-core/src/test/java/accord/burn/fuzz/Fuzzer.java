@@ -40,6 +40,9 @@ import org.slf4j.LoggerFactory;
 
 import accord.api.ProtocolModifiers.Toggles;
 import accord.burn.BurnTestBase;
+import accord.burn.fuzz.predicate.HistoryMode;
+import accord.burn.fuzz.predicate.PredicateGuider;
+import accord.burn.fuzz.predicate.StageClassifier;
 import accord.burn.fuzz.trace.GuidedPendingQueue;
 import accord.burn.fuzz.trace.Trace;
 import accord.burn.fuzz.trace.TraceEvent;
@@ -77,9 +80,15 @@ public class Fuzzer {
     private final long maxDurationMs;
     private final Deque<Trace> workQueue;
     private final TlcGuider guider;
+    // Predicate-based coverage has no external dependency (unlike TlcGuider/TLC server), so it is
+    // always constructed and always checked every iteration - purely for measurement/comparison
+    // unless usePredicateGuidance selects it to drive mutation energy instead of TLC.
+    private final PredicateGuider predicateGuider;
+    private final boolean usePredicateGuidance;
     private final boolean guided;
     private final int maxQueueSize;
     private final int reseedFrequency;
+    private final boolean randomSchedule;
 
     public Fuzzer(long seed, int numNodes, int operations, int concurrency,
                   int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota) {
@@ -102,6 +111,59 @@ public class Fuzzer {
     public Fuzzer(long seed, int numNodes, int operations, int concurrency,
                   int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota,
                   int traceEventBudget, long maxDurationMs, String tlcAddr, boolean guided, int maxQueueSize, int reseedFrequency) {
+        this(seed, numNodes, operations, concurrency, iterations, seedPopulationSize, mutationsPerTrace, crashQuota,
+             traceEventBudget, maxDurationMs, tlcAddr, guided, maxQueueSize, reseedFrequency, false);
+    }
+
+    public Fuzzer(long seed, int numNodes, int operations, int concurrency,
+                  int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota,
+                  int traceEventBudget, long maxDurationMs, String tlcAddr, boolean guided, int maxQueueSize, int reseedFrequency,
+                  boolean randomSchedule) {
+        this(seed, numNodes, operations, concurrency, iterations, seedPopulationSize, mutationsPerTrace, crashQuota,
+             traceEventBudget, maxDurationMs, tlcAddr, guided, maxQueueSize, reseedFrequency, randomSchedule, false);
+    }
+
+    /**
+     * @param usePredicateGuidance if true, mutation energy is driven by {@link PredicateGuider}
+     *                             instead of the TLC {@link TlcGuider}; TLC coverage (if tlcAddr
+     *                             is set) is still computed and logged every iteration either way,
+     *                             purely for measurement/comparison.
+     */
+    public Fuzzer(long seed, int numNodes, int operations, int concurrency,
+                  int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota,
+                  int traceEventBudget, long maxDurationMs, String tlcAddr, boolean guided, int maxQueueSize, int reseedFrequency,
+                  boolean randomSchedule, boolean usePredicateGuidance) {
+        this(seed, numNodes, operations, concurrency, iterations, seedPopulationSize, mutationsPerTrace, crashQuota,
+             traceEventBudget, maxDurationMs, tlcAddr, guided, maxQueueSize, reseedFrequency, randomSchedule, usePredicateGuidance,
+             HistoryMode.FULL_HISTORY);
+    }
+
+    /**
+     * @param predicateHistoryMode selects how {@link PredicateGuider}'s joint-state key retains a
+     *                             transaction's stage history: every stage ever touched ({@link
+     *                             HistoryMode#FULL_HISTORY}, the default) or just its current
+     *                             backbone stage plus a separate recovery slot ({@link
+     *                             HistoryMode#CURRENT_STAGE_ONLY}) - see {@code
+     *                             accord.burn.fuzz.predicate.StageSlot}.
+     */
+    public Fuzzer(long seed, int numNodes, int operations, int concurrency,
+                  int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota,
+                  int traceEventBudget, long maxDurationMs, String tlcAddr, boolean guided, int maxQueueSize, int reseedFrequency,
+                  boolean randomSchedule, boolean usePredicateGuidance, HistoryMode predicateHistoryMode) {
+        this(seed, numNodes, operations, concurrency, iterations, seedPopulationSize, mutationsPerTrace, crashQuota,
+             traceEventBudget, maxDurationMs, tlcAddr, guided, maxQueueSize, reseedFrequency, randomSchedule, usePredicateGuidance,
+             predicateHistoryMode, StageClassifier.EXTENT);
+    }
+
+    /**
+     * @param predicateClassifier selects the {@link StageClassifier} {@link PredicateGuider} uses -
+     *                            {@link StageClassifier#EXTENT} (the default) or {@link
+     *                            StageClassifier#REACHED_COMPLETED}.
+     */
+    public Fuzzer(long seed, int numNodes, int operations, int concurrency,
+                  int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota,
+                  int traceEventBudget, long maxDurationMs, String tlcAddr, boolean guided, int maxQueueSize, int reseedFrequency,
+                  boolean randomSchedule, boolean usePredicateGuidance, HistoryMode predicateHistoryMode, StageClassifier predicateClassifier) {
         this.random = new Random(seed);
         this.baseSeed = seed;
         this.numNodes = numNodes;
@@ -115,9 +177,12 @@ public class Fuzzer {
         this.maxDurationMs = maxDurationMs;
         this.workQueue = new ArrayDeque<>();
         this.guider = tlcAddr != null ? new TlcGuider(tlcAddr) : null;
+        this.predicateGuider = new PredicateGuider(predicateClassifier, predicateHistoryMode);
+        this.usePredicateGuidance = usePredicateGuidance;
         this.guided = guided;
         this.maxQueueSize = maxQueueSize;
         this.reseedFrequency = reseedFrequency;
+        this.randomSchedule = randomSchedule;
     }
 
     /**
@@ -139,24 +204,27 @@ public class Fuzzer {
             throw new RuntimeException("Cannot create trace output directory", e);
         }
 
-        Path traceFile      = dir.resolve("session_" + sessionId + ".trace.txt");
-        Path jsonlFile      = dir.resolve("session_" + sessionId + ".tla.jsonl");
-        Path jsonFile       = dir.resolve("session_" + sessionId + ".tla.json");
-        Path csvFile        = dir.resolve("session_" + sessionId + ".coverage.csv");
-        Path pendingFile    = dir.resolve("session_" + sessionId + ".pending.txt");
-        Path repopulateFile = dir.resolve("session_" + sessionId + ".repopulate.csv");
-        Path errorsFile     = dir.resolve("session_" + sessionId + ".errors.csv");
+        Path traceFile          = dir.resolve("session_" + sessionId + ".trace.txt");
+        Path jsonlFile          = dir.resolve("session_" + sessionId + ".tla.jsonl");
+        Path jsonFile           = dir.resolve("session_" + sessionId + ".tla.json");
+        Path csvFile            = dir.resolve("session_" + sessionId + ".coverage.csv");
+        Path predicateCsvFile   = dir.resolve("session_" + sessionId + ".predicate_coverage.csv");
+        Path pendingFile        = dir.resolve("session_" + sessionId + ".pending.txt");
+        Path repopulateFile     = dir.resolve("session_" + sessionId + ".repopulate.csv");
+        Path errorsFile         = dir.resolve("session_" + sessionId + ".errors.csv");
 
-        try (BufferedWriter traceWriter      = Files.newBufferedWriter(traceFile,      StandardCharsets.UTF_8);
-             BufferedWriter jsonlWriter      = Files.newBufferedWriter(jsonlFile,      StandardCharsets.UTF_8);
-             BufferedWriter jsonWriter       = Files.newBufferedWriter(jsonFile,       StandardCharsets.UTF_8);
-             BufferedWriter csvWriter        = Files.newBufferedWriter(csvFile,        StandardCharsets.UTF_8);
-             BufferedWriter pendingWriter    = Files.newBufferedWriter(pendingFile,    StandardCharsets.UTF_8);
-             BufferedWriter repopulateWriter = Files.newBufferedWriter(repopulateFile, StandardCharsets.UTF_8);
-             BufferedWriter errorsWriter     = Files.newBufferedWriter(errorsFile,     StandardCharsets.UTF_8)) {
+        try (BufferedWriter traceWriter        = Files.newBufferedWriter(traceFile,        StandardCharsets.UTF_8);
+             BufferedWriter jsonlWriter        = Files.newBufferedWriter(jsonlFile,        StandardCharsets.UTF_8);
+             BufferedWriter jsonWriter         = Files.newBufferedWriter(jsonFile,         StandardCharsets.UTF_8);
+             BufferedWriter csvWriter          = Files.newBufferedWriter(csvFile,          StandardCharsets.UTF_8);
+             BufferedWriter predicateCsvWriter = Files.newBufferedWriter(predicateCsvFile, StandardCharsets.UTF_8);
+             BufferedWriter pendingWriter      = Files.newBufferedWriter(pendingFile,      StandardCharsets.UTF_8);
+             BufferedWriter repopulateWriter   = Files.newBufferedWriter(repopulateFile,   StandardCharsets.UTF_8);
+             BufferedWriter errorsWriter       = Files.newBufferedWriter(errorsFile,       StandardCharsets.UTF_8)) {
 
             if (guider != null)
                 csvWriter.write("iteration,unique_abstract_states\n");
+            predicateCsvWriter.write("iteration,unique_abstract_states\n");
             repopulateWriter.write("iteration\n");
             errorsWriter.write("run_id,seed,exception_class,full_stack_trace\n");
 
@@ -180,20 +248,25 @@ public class Fuzzer {
                     break;
                 }
 
-                boolean queueEmpty = workQueue.isEmpty();
-                Trace schedule = null;
-                if (queueEmpty) {
-                    Trace fresh = runBurnTest(null, "reseed_" + i, errorsWriter);
-                    if (fresh != null && !fresh.isEmpty())
-                        schedule = generateRandomSeed(fresh);
+                Trace schedule;
+                if (randomSchedule) {
+                    Trace fresh = runBurnTest(null, "fresh_" + i, errorsWriter);
+                    schedule = (fresh != null && !fresh.isEmpty()) ? generateRandomSeed(fresh) : null;
+                    logger.info("[ITER {}/{}] RANDOM-SCHED ({} events) | workQueue ignored",
+                                i + 1, iterations, schedule != null ? schedule.size() : 0);
                 } else {
-                    schedule = workQueue.poll();
+                    boolean queueEmpty = workQueue.isEmpty();
+                    if (queueEmpty) {
+                        Trace fresh = runBurnTest(null, "reseed_" + i, errorsWriter);
+                        schedule = (fresh != null && !fresh.isEmpty()) ? generateRandomSeed(fresh) : null;
+                    } else {
+                        schedule = workQueue.poll();
+                    }
+                    String mode = schedule != null ? "REPLAY (" + schedule.size() + " events)" : "RANDOM";
+                    logger.info("[ITER {}/{}] {} | workQueue={}", i + 1, iterations, mode, workQueue.size());
+                    if (queueEmpty)
+                        writeRepopulate(i, repopulateWriter);
                 }
-                String mode = schedule != null ? "REPLAY (" + schedule.size() + " events)" : "RANDOM";
-                logger.info("[ITER {}/{}] {} | workQueue={}", i + 1, iterations, mode, workQueue.size());
-
-                if (queueEmpty)
-                    writeRepopulate(i, repopulateWriter);
 
                 if (schedule != null)
                     savePending(schedule, "iter_" + i, pendingWriter);
@@ -207,26 +280,43 @@ public class Fuzzer {
                 logger.info("[ITER {}/{}] Result: {} events", i + 1, iterations, result.size());
                 saveTrace(result, "iter" + i + "_execution", traceWriter, jsonlWriter, jsonWriter);
 
+                // TLC and predicate coverage are always both computed and logged, regardless of
+                // which one (if either) drives mutation energy - so the two are always directly
+                // comparable in coverage.csv / predicate_coverage.csv for the same run.
+                Integer tlcNewStates = null;
                 if (guider != null) {
-                    int numNewStates = guider.check(result);
+                    tlcNewStates = guider.check(result);
                     csvWriter.write(i + "," + guider.totalSeenStates() + "\n");
                     csvWriter.flush();
-                    if (guided && numNewStates > 0) {
-                        int count = Math.max(0, Math.min(numNewStates * mutationsPerTrace, maxQueueSize - workQueue.size()));
-                        List<Trace> mutants = mutate(result, count);
-                        logger.info("[ITER {}/{}] TLC: {} new states → {} mutants | totalSeen={}", i + 1, iterations, numNewStates, mutants.size(), guider.totalSeenStates());
-                        workQueue.addAll(mutants);
-                    } else if (guided) {
-                        logger.debug("[ITER {}/{}] TLC: no new states, skipping mutation", i + 1, iterations);
-                    }
                 }
-                if (!guided || guider == null) {
+                int predicateNewStates = predicateGuider.check(result);
+                predicateCsvWriter.write(i + "," + predicateGuider.totalSeenStates() + "\n");
+                predicateCsvWriter.flush();
+
+                Integer energySource = usePredicateGuidance ? (Integer) predicateNewStates : tlcNewStates;
+                String energyLabel = usePredicateGuidance ? "PREDICATE" : "TLC";
+                boolean hasEnergySource = guided && energySource != null;
+
+                if (!randomSchedule && hasEnergySource && energySource > 0) {
+                    int count = Math.max(0, Math.min(energySource * mutationsPerTrace, maxQueueSize - workQueue.size()));
+                    List<Trace> mutants = mutate(result, count);
+                    logger.info("[ITER {}/{}] {}: {} new states → {} mutants | totalSeen(TLC)={} totalSeen(PREDICATE)={}",
+                                i + 1, iterations, energyLabel, energySource, mutants.size(),
+                                guider != null ? guider.totalSeenStates() : "n/a", predicateGuider.totalSeenStates());
+                    workQueue.addAll(mutants);
+                } else if (!randomSchedule && hasEnergySource) {
+                    logger.debug("[ITER {}/{}] {}: no new states, skipping mutation", i + 1, iterations, energyLabel);
+                } else {
+                    logger.info("[ITER {}/{}] totalSeen(TLC)={} totalSeen(PREDICATE)={}",
+                                i + 1, iterations, guider != null ? guider.totalSeenStates() : "n/a", predicateGuider.totalSeenStates());
+                }
+                if (!randomSchedule && !hasEnergySource) {
                     List<Trace> mutants = mutate(result);
                     logger.info("[ITER {}/{}] Generated {} mutants", i + 1, iterations, mutants.size());
                     workQueue.addAll(mutants);
                 }
 
-                if (reseedFrequency > 0 && i > 0 && i % reseedFrequency == 0) {
+                if (!randomSchedule && reseedFrequency > 0 && i > 0 && i % reseedFrequency == 0) {
                     logger.info("[RESEED] Iteration {}: generating {} random seeds", i, seedPopulationSize);
                     workQueue.clear();
                     for (int s = 0; s < seedPopulationSize; s++) {
@@ -241,12 +331,9 @@ public class Fuzzer {
             logger.error("Session file I/O error: {}", e.getMessage(), e);
         }
 
-        if (guider != null)
-            logger.info("=== FUZZER DONE === totalSeenStates={} | workQueue remaining: {} | trace: {} | jsonl: {} | json: {} | coverage: {} | pending: {} | repopulate: {} | errors: {}",
-                        guider.totalSeenStates(), workQueue.size(), traceFile, jsonlFile, jsonFile, csvFile, pendingFile, repopulateFile, errorsFile);
-        else
-            logger.info("=== FUZZER DONE === workQueue remaining: {} | trace: {} | jsonl: {} | json: {} | pending: {} | repopulate: {} | errors: {}",
-                        workQueue.size(), traceFile, jsonlFile, jsonFile, pendingFile, repopulateFile, errorsFile);
+        logger.info("=== FUZZER DONE === totalSeenStates(TLC)={} totalSeenStates(PREDICATE)={} | workQueue remaining: {} | trace: {} | jsonl: {} | json: {} | coverage: {} | predicateCoverage: {} | pending: {} | repopulate: {} | errors: {}",
+                    guider != null ? guider.totalSeenStates() : "n/a", predicateGuider.totalSeenStates(),
+                    workQueue.size(), traceFile, jsonlFile, jsonFile, csvFile, predicateCsvFile, pendingFile, repopulateFile, errorsFile);
     }
 
     /**
