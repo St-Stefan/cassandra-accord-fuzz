@@ -25,8 +25,6 @@ import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -89,6 +87,7 @@ public class Fuzzer {
     private final int maxQueueSize;
     private final int reseedFrequency;
     private final boolean randomSchedule;
+    private final String runLabel;
 
     public Fuzzer(long seed, int numNodes, int operations, int concurrency,
                   int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota) {
@@ -164,6 +163,21 @@ public class Fuzzer {
                   int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota,
                   int traceEventBudget, long maxDurationMs, String tlcAddr, boolean guided, int maxQueueSize, int reseedFrequency,
                   boolean randomSchedule, boolean usePredicateGuidance, HistoryMode predicateHistoryMode, StageClassifier predicateClassifier) {
+        this(seed, numNodes, operations, concurrency, iterations, seedPopulationSize, mutationsPerTrace, crashQuota,
+             traceEventBudget, maxDurationMs, tlcAddr, guided, maxQueueSize, reseedFrequency, randomSchedule, usePredicateGuidance,
+             predicateHistoryMode, predicateClassifier, "fuzz");
+    }
+
+    /**
+     * @param runLabel short identifier folded into the session output filenames (e.g. "modelfuzz",
+     *                 "predicate") so runs from different matrix cells (mode x node count x seed)
+     *                 don't collide and list in chronological order - see {@link SessionNaming}.
+     */
+    public Fuzzer(long seed, int numNodes, int operations, int concurrency,
+                  int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota,
+                  int traceEventBudget, long maxDurationMs, String tlcAddr, boolean guided, int maxQueueSize, int reseedFrequency,
+                  boolean randomSchedule, boolean usePredicateGuidance, HistoryMode predicateHistoryMode, StageClassifier predicateClassifier,
+                  String runLabel) {
         this.random = new Random(seed);
         this.baseSeed = seed;
         this.numNodes = numNodes;
@@ -183,6 +197,7 @@ public class Fuzzer {
         this.maxQueueSize = maxQueueSize;
         this.reseedFrequency = reseedFrequency;
         this.randomSchedule = randomSchedule;
+        this.runLabel = runLabel;
     }
 
     /**
@@ -191,7 +206,7 @@ public class Fuzzer {
      */
     public void run() {
         long startTime = System.currentTimeMillis();
-        String sessionId = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HHmm_ddMM")) + "_seed" + baseSeed;
+        String sessionId = SessionNaming.id(runLabel, numNodes, baseSeed);
         logger.info("=== FUZZER START === seed={}, nodes={}, ops={}, seeds={}, iterations={}, mutations/trace={}, traceBudget={}, maxDuration={}",
                     baseSeed, numNodes, operations, seedPopulationSize, iterations, mutationsPerTrace,
                     traceEventBudget > 0 ? traceEventBudget : "unlimited",

@@ -16,25 +16,24 @@
  * limitations under the License.
  */
 
-plugins {
-    // https://github.com/eskatos/creadur-rat-gradle
-    id("org.nosphere.apache.rat") version "0.7.1"
-}
+package accord.burn.fuzz;
 
-repositories {
-    mavenCentral()
-}
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
-// See buildSrc/src/main/groovy/accord.java-conventions.gradle for java standards
+/**
+ * Shared filename builder for every fuzzer/replay output. Timestamp comes first so a directory
+ * listing sorts chronologically across runs regardless of mode/nodes/seed; the rest identifies
+ * the run without needing to open the file.
+ */
+public final class SessionNaming
+{
+    private static final DateTimeFormatter TIMESTAMP = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss");
 
-rat {
-    // List of Gradle exclude directives, defaults to ['**/.gradle/**']
-    excludes.add("**/build/**")
-    excludes.add("**/*.md")
-    excludes.add(".idea/**")
-    excludes.add(".claude/**")
-    if (layout.projectDirectory.file(".rat-excludes.txt").asFile.exists())
+    private SessionNaming() {}
+
+    public static String id(String label, int numNodes, long seed)
     {
-        excludeFile.set(layout.projectDirectory.file(".rat-excludes.txt"))
+        return LocalDateTime.now().format(TIMESTAMP) + "_" + label + "_n" + numNodes + "_seed" + seed;
     }
 }

@@ -146,4 +146,8 @@ task allTestJar(type: Jar) {
 
 test {
     maxHeapSize = '4g'
+    // Forwards -PfuzzNodes=5 on the Gradle command line into the forked test JVM as
+    // -Dfuzz.nodes, so FuzzerTest's matrix methods (modelfuzzMatrix, etc.) can be pointed at a
+    // node count without editing source. See scripts/run-fuzz-matrix.sh.
+    systemProperty 'fuzz.nodes', project.findProperty('fuzzNodes') ?: '7'
 }

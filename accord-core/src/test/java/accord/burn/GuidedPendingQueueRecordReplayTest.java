@@ -23,14 +23,13 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.concurrent.atomic.AtomicReference;
 
 import java.util.List;
 
 import accord.api.ProtocolModifiers.Toggles;
 import accord.burn.fuzz.NoDelayQueue;
+import accord.burn.fuzz.SessionNaming;
 import org.junit.jupiter.api.Test;
 
 import accord.burn.fuzz.CrashSimulator;
@@ -281,7 +280,7 @@ public class GuidedPendingQueueRecordReplayTest extends BurnTestBase {
         Path outDir = Path.of(workDir, "build", "test-traces");
         Files.createDirectories(outDir);
 
-        Path outFile = outDir.resolve(LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "trace.txt");
+        Path outFile = outDir.resolve(SessionNaming.id("replay", nodeCount, seed) + ".trace.txt");
         Files.writeString(outFile, trace.toFullString(), StandardCharsets.UTF_8);
         System.out.println("Trace written to: " + outFile.toAbsolutePath());
     }

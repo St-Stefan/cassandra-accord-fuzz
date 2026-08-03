@@ -34,6 +34,7 @@ import accord.api.ProtocolModifiers.Toggles;
 import accord.burn.BurnTestBase;
 import accord.burn.fuzz.CrashSimulator;
 import accord.burn.fuzz.NoDelayQueue;
+import accord.burn.fuzz.SessionNaming;
 import accord.burn.fuzz.trace.GuidedPendingQueue;
 import accord.burn.fuzz.trace.Trace;
 import accord.burn.fuzz.trace.TraceRecorder;
@@ -78,7 +79,7 @@ public class PredicateReplayTest {
         Trace trace = runBurnTest(seed, numNodes, operations, concurrency);
         assertFalse(trace.isEmpty(), "expected a non-empty trace from the burn test");
         logger.info("Recorded trace: {} events", trace.size());
-        logger.info("Wrote raw trace to {}", dumpTrace(trace, seed));
+        logger.info("Wrote raw trace to {}", dumpTrace(trace, seed, numNodes));
 
         PredicateTraceWalker walker = PredicateTraceWalker.of(trace);
         List<TxnId> transactions = new ArrayList<>(walker.transactions());
@@ -128,10 +129,10 @@ public class PredicateReplayTest {
      * Writes every raw event, one per line, so the printed predicate counts can be checked
      * against the actual trace rather than taken on faith. Deterministic for a fixed seed.
      */
-    private static Path dumpTrace(Trace trace, long seed) throws IOException {
+    private static Path dumpTrace(Trace trace, long seed, int numNodes) throws IOException {
         Path dir = Path.of(System.getProperty("user.dir"), "build", "test-traces", "predicate");
         Files.createDirectories(dir);
-        Path traceFile = dir.resolve("replay_seed" + seed + ".trace.txt");
+        Path traceFile = dir.resolve(SessionNaming.id("replay", numNodes, seed) + ".trace.txt");
         Files.writeString(traceFile, trace.toFullString(), StandardCharsets.UTF_8);
         return traceFile;
     }
