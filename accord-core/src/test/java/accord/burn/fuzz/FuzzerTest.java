@@ -223,26 +223,38 @@ public class FuzzerTest {
     // --- 24h matrix runs -------------------------------------------------------------------
     // Node count comes from the "fuzz.nodes" system property (set via -PfuzzNodes on the Gradle
     // command line - see accord-core/build.gradle) so the same method drives 5/7/9-node runs
-    // without editing source. Each method loops MATRIX_SEEDS internally, one 24h Fuzzer run per
-    // seed, so one Gradle invocation covers a full (mode, node count) row of the matrix.
+    // without editing source. Each method loops one 5-seed set internally, one 24h Fuzzer run per
+    // seed, so one Gradle invocation covers half a (mode, node count) row of the matrix. Which
+    // set runs comes from the "fuzz.seedSet" system property (set via -PfuzzSet; 1 or 2, defaults
+    // to 1 if unset) so both halves can run as separate parallel processes.
     // Requires a TLC server at localhost:2023 for modelfuzzMatrix/predicateMatrix's TLC-comparison
     // column; both degrade gracefully (coverage.csv stays at 0) if it isn't reachable.
 
-    private static final long[] MATRIX_SEEDS = {1L, 2L, 42L, 420L, 5L, 6L, 123L, 8L, 9L, 10L};
+    private static final long[] SEED_SET_1 = {1L, 2L, 42L, 420L, 5L};
+    private static final long[] SEED_SET_2 = {6L, 123L, 8L, 9L, 10L};
     private static final long MATRIX_RUN_DURATION_MS = 24L * 60 * 60 * 1000;
 
     private static int matrixNumNodes() {
         return Integer.getInteger("fuzz.nodes", 7);
     }
 
+    private static long[] matrixSeeds() {
+        int set = Integer.getInteger("fuzz.seedSet", 1);
+        return switch (set) {
+            case 1 -> SEED_SET_1;
+            case 2 -> SEED_SET_2;
+            default -> throw new IllegalArgumentException("fuzz.seedSet must be 1 or 2, was " + set);
+        };
+    }
+
     /**
      * TLC/ModelFuzz-guided: mutation energy comes from newly discovered TLC states.
-     *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.modelfuzzMatrix" -PfuzzNodes=7
+     *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.modelfuzzMatrix" -PfuzzNodes=7 -PfuzzSet=1
      */
     @Test
     public void modelfuzzMatrix() {
         int numNodes = matrixNumNodes();
-        for (long seed : MATRIX_SEEDS) {
+        for (long seed : matrixSeeds()) {
             new Fuzzer(seed, numNodes, 3, 1,
                        Integer.MAX_VALUE, 40, 1, 1,
                        500, MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 0,
@@ -253,12 +265,12 @@ public class FuzzerTest {
 
     /**
      * Unguided: swap/crash/restart mutations applied every iteration regardless of coverage.
-     *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.randomMatrix" -PfuzzNodes=7
+     *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.randomMatrix" -PfuzzNodes=7 -PfuzzSet=1
      */
     @Test
     public void randomMatrix() {
         int numNodes = matrixNumNodes();
-        for (long seed : MATRIX_SEEDS) {
+        for (long seed : matrixSeeds()) {
             new Fuzzer(seed, numNodes, 3, 1,
                        Integer.MAX_VALUE, 40, 1, 1,
                        500, MATRIX_RUN_DURATION_MS, "localhost:2023", false, 700, 0,
@@ -269,12 +281,12 @@ public class FuzzerTest {
 
     /**
      * Pure random schedule generation each iteration (ModelFuzz-style), no mutation feedback loop.
-     *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.randomScheduleMatrix" -PfuzzNodes=7
+     *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.randomScheduleMatrix" -PfuzzNodes=7 -PfuzzSet=1
      */
     @Test
     public void randomScheduleMatrix() {
         int numNodes = matrixNumNodes();
-        for (long seed : MATRIX_SEEDS) {
+        for (long seed : matrixSeeds()) {
             new Fuzzer(seed, numNodes, 3, 1,
                        Integer.MAX_VALUE, 40, 1, 1,
                        500, MATRIX_RUN_DURATION_MS, "localhost:2023", false, 700, 0,
@@ -286,12 +298,12 @@ public class FuzzerTest {
     /**
      * Predicate-guided: mutation energy comes from {@link accord.burn.fuzz.predicate.PredicateGuider}
      * (full history, EXTENT classifier) - no external dependency.
-     *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.predicateMatrix" -PfuzzNodes=7
+     *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.predicateMatrix" -PfuzzNodes=7 -PfuzzSet=1
      */
     @Test
     public void predicateMatrix() {
         int numNodes = matrixNumNodes();
-        for (long seed : MATRIX_SEEDS) {
+        for (long seed : matrixSeeds()) {
             new Fuzzer(seed, numNodes, 3, 1,
                        Integer.MAX_VALUE, 40, 1, 1,
                        500, MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 0,

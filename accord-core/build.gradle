@@ -150,4 +150,7 @@ test {
     // -Dfuzz.nodes, so FuzzerTest's matrix methods (modelfuzzMatrix, etc.) can be pointed at a
     // node count without editing source. See scripts/run-fuzz-matrix.sh.
     systemProperty 'fuzz.nodes', project.findProperty('fuzzNodes') ?: '7'
+    // Forwards -PfuzzSet=1|2 the same way, selecting which 5-seed half of the matrix
+    // (SEED_SET_1/SEED_SET_2 in FuzzerTest) a matrix method runs. Defaults to set 1.
+    systemProperty 'fuzz.seedSet', project.findProperty('fuzzSet') ?: '1'
 }
