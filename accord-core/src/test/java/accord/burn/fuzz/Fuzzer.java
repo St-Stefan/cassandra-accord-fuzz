@@ -219,19 +219,13 @@ public class Fuzzer {
             throw new RuntimeException("Cannot create trace output directory", e);
         }
 
-        Path traceFile          = dir.resolve("session_" + sessionId + ".trace.txt");
-        Path jsonlFile          = dir.resolve("session_" + sessionId + ".tla.jsonl");
-        Path jsonFile           = dir.resolve("session_" + sessionId + ".tla.json");
         Path csvFile            = dir.resolve("session_" + sessionId + ".coverage.csv");
         Path predicateCsvFile   = dir.resolve("session_" + sessionId + ".predicate_coverage.csv");
         Path pendingFile        = dir.resolve("session_" + sessionId + ".pending.txt");
         Path repopulateFile     = dir.resolve("session_" + sessionId + ".repopulate.csv");
         Path errorsFile         = dir.resolve("session_" + sessionId + ".errors.csv");
 
-        try (BufferedWriter traceWriter        = Files.newBufferedWriter(traceFile,        StandardCharsets.UTF_8);
-             BufferedWriter jsonlWriter        = Files.newBufferedWriter(jsonlFile,        StandardCharsets.UTF_8);
-             BufferedWriter jsonWriter         = Files.newBufferedWriter(jsonFile,         StandardCharsets.UTF_8);
-             BufferedWriter csvWriter          = Files.newBufferedWriter(csvFile,          StandardCharsets.UTF_8);
+        try (BufferedWriter csvWriter          = Files.newBufferedWriter(csvFile,          StandardCharsets.UTF_8);
              BufferedWriter predicateCsvWriter = Files.newBufferedWriter(predicateCsvFile, StandardCharsets.UTF_8);
              BufferedWriter pendingWriter      = Files.newBufferedWriter(pendingFile,      StandardCharsets.UTF_8);
              BufferedWriter repopulateWriter   = Files.newBufferedWriter(repopulateFile,   StandardCharsets.UTF_8);
@@ -293,7 +287,6 @@ public class Fuzzer {
                 }
 
                 logger.info("[ITER {}/{}] Result: {} events", i + 1, iterations, result.size());
-                saveTrace(result, "iter" + i + "_execution", traceWriter, jsonlWriter, jsonWriter);
 
                 // TLC and predicate coverage are always both computed and logged, regardless of
                 // which one (if either) drives mutation energy - so the two are always directly
@@ -346,9 +339,9 @@ public class Fuzzer {
             logger.error("Session file I/O error: {}", e.getMessage(), e);
         }
 
-        logger.info("=== FUZZER DONE === totalSeenStates(TLC)={} totalSeenStates(PREDICATE)={} | workQueue remaining: {} | trace: {} | jsonl: {} | json: {} | coverage: {} | predicateCoverage: {} | pending: {} | repopulate: {} | errors: {}",
+        logger.info("=== FUZZER DONE === totalSeenStates(TLC)={} totalSeenStates(PREDICATE)={} | workQueue remaining: {} | coverage: {} | predicateCoverage: {} | pending: {} | repopulate: {} | errors: {}",
                     guider != null ? guider.totalSeenStates() : "n/a", predicateGuider.totalSeenStates(),
-                    workQueue.size(), traceFile, jsonlFile, jsonFile, csvFile, predicateCsvFile, pendingFile, repopulateFile, errorsFile);
+                    workQueue.size(), csvFile, predicateCsvFile, pendingFile, repopulateFile, errorsFile);
     }
 
     /**
@@ -640,21 +633,4 @@ public class Fuzzer {
         }
     }
 
-    private void saveTrace(Trace trace, String label, BufferedWriter traceWriter, BufferedWriter jsonlWriter, BufferedWriter jsonWriter) {
-        try {
-            // traceWriter.write("=== " + label + " ===\n");
-            // traceWriter.write(trace.toFullString());
-            // traceWriter.write("\n\n");
-            // traceWriter.flush();
-
-            jsonlWriter.write(trace.toTlaJson(false));
-            jsonlWriter.flush();
-
-            jsonWriter.write(trace.toTlaJson(true));
-            jsonWriter.write('\n');
-            jsonWriter.flush();
-        } catch (IOException e) {
-            logger.warn("  Failed to append trace {}: {}", label, e.getMessage());
-        }
-    }
 }
