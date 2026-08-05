@@ -277,8 +277,11 @@ public class Fuzzer {
                         writeRepopulate(i, repopulateWriter);
                 }
 
-                if (schedule != null)
-                    savePending(schedule, "iter_" + i, pendingWriter);
+                // Disabled: unbounded per-iteration append blew a 63G disk on 24h+ runs (46G across
+                // 8 concurrent sessions). Re-enable only with a size cap/rotation if replay of
+                // pending schedules is needed again.
+                // if (schedule != null)
+                //     savePending(schedule, "iter_" + i, pendingWriter);
 
                 Trace result = runBurnTest(schedule, "iter_" + i, errorsWriter);
                 if (result == null || result.isEmpty()) {
@@ -288,20 +291,24 @@ public class Fuzzer {
 
                 logger.info("[ITER {}/{}] Result: {} events", i + 1, iterations, result.size());
 
-                // TLC and predicate coverage are always both computed and logged, regardless of
-                // which one (if either) drives mutation energy - so the two are always directly
-                // comparable in coverage.csv / predicate_coverage.csv for the same run.
+                // Predicate coverage is only computed when it actually drives mutation energy -
+                // the state-machine replay is expensive enough per iteration that running it
+                // unconditionally (purely for TLC-vs-predicate comparison) was measurably slowing
+                // down the modelfuzz/random/randomschedule modes that never use it.
                 Integer tlcNewStates = null;
                 if (guider != null) {
                     tlcNewStates = guider.check(result);
                     csvWriter.write(i + "," + guider.totalSeenStates() + "\n");
                     csvWriter.flush();
                 }
-                int predicateNewStates = predicateGuider.check(result);
-                predicateCsvWriter.write(i + "," + predicateGuider.totalSeenStates() + "\n");
-                predicateCsvWriter.flush();
+                Integer predicateNewStates = null;
+                if (usePredicateGuidance) {
+                    predicateNewStates = predicateGuider.check(result);
+                    predicateCsvWriter.write(i + "," + predicateGuider.totalSeenStates() + "\n");
+                    predicateCsvWriter.flush();
+                }
 
-                Integer energySource = usePredicateGuidance ? (Integer) predicateNewStates : tlcNewStates;
+                Integer energySource = usePredicateGuidance ? predicateNewStates : tlcNewStates;
                 String energyLabel = usePredicateGuidance ? "PREDICATE" : "TLC";
                 boolean hasEnergySource = guided && energySource != null;
 
