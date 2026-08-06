@@ -312,6 +312,72 @@ public class FuzzerTest {
         }
     }
 
+    /**
+     * Predicate-guided, full history but the coarser REACHED_COMPLETED classifier instead of EXTENT.
+     *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.predicateReachedMatrix" -PfuzzNodes=7 -PfuzzSet=1
+     */
+    @Test
+    public void predicateReachedMatrix() {
+        int numNodes = matrixNumNodes();
+        for (long seed : matrixSeeds()) {
+            new Fuzzer(seed, numNodes, 3, 1,
+                       Integer.MAX_VALUE, 40, 1, 1,
+                       500, MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 0,
+                       false, true, HistoryMode.FULL_HISTORY, StageClassifier.REACHED_COMPLETED,
+                       "predicateReached").run();
+        }
+    }
+
+    /**
+     * Predicate-guided, CURRENT_STAGE_ONLY (compressed) history with the EXTENT classifier, and
+     * periodic reseeding every 7000 iterations instead of the other variants' pure mutation queue.
+     *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.predicateCompressedMatrix" -PfuzzNodes=7 -PfuzzSet=1
+     */
+    @Test
+    public void predicateCompressedMatrix() {
+        int numNodes = matrixNumNodes();
+        for (long seed : matrixSeeds()) {
+            new Fuzzer(seed, numNodes, 3, 1,
+                       Integer.MAX_VALUE, 40, 1, 1,
+                       500, MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 7000,
+                       false, true, HistoryMode.CURRENT_STAGE_ONLY, StageClassifier.EXTENT,
+                       "predicateCompressed").run();
+        }
+    }
+
+    /**
+     * Predicate-guided, full history but the coarser REACHED_COMPLETED classifier instead of EXTENT.
+     *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.predicateReachedMatrix" -PfuzzNodes=7 -PfuzzSet=1
+     */
+    @Test
+    public void predicateReachedMatrix() {
+        int numNodes = matrixNumNodes();
+        for (long seed : matrixSeeds()) {
+            new Fuzzer(seed, numNodes, 3, 1,
+                       Integer.MAX_VALUE, 40, 1, 1,
+                       500, MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 0,
+                       false, true, HistoryMode.FULL_HISTORY, StageClassifier.REACHED_COMPLETED,
+                       "predicateReached").run();
+        }
+    }
+
+    /**
+     * Predicate-guided, CURRENT_STAGE_ONLY (compressed) history with the EXTENT classifier, and
+     * periodic reseeding every 7000 iterations instead of the other variants' pure mutation queue.
+     *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.predicateCompressedMatrix" -PfuzzNodes=7 -PfuzzSet=1
+     */
+    @Test
+    public void predicateCompressedMatrix() {
+        int numNodes = matrixNumNodes();
+        for (long seed : matrixSeeds()) {
+            new Fuzzer(seed, numNodes, 3, 1,
+                       Integer.MAX_VALUE, 40, 1, 1,
+                       500, MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 7000,
+                       false, true, HistoryMode.CURRENT_STAGE_ONLY, StageClassifier.EXTENT,
+                       "predicateCompressed").run();
+        }
+    }
+
     @Test
     public void testLongExploration2() {
         long time = 12* 60 * 60 * 1000;
