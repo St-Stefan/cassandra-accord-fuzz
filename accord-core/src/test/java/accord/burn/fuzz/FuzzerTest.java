@@ -238,6 +238,21 @@ public class FuzzerTest {
         return Integer.getInteger("fuzz.nodes", 7);
     }
 
+    // 9-node runs exercise 2 simultaneous crashes instead of 1 - still well within Accord's
+    // maxToleratedFailures(9)=4 (Shard.java), so this doesn't approach the protocol's own limits.
+    private static int matrixCrashQuota(int numNodes) {
+        return numNodes == 9 ? 2 : 1;
+    }
+
+    // GuidedPendingQueue.poll() hard-stops message delivery once recorder.eventCount() hits this
+    // cap (GuidedPendingQueue.java:180) - not just truncated recording, the whole burn test halts
+    // mid-flight. More replicas plus crash-triggered recovery cost more messages per operation, so
+    // 9-node runs get extra headroom to avoid silently losing coverage of exactly the multi-crash
+    // scenarios matrixCrashQuota was raised to exercise.
+    private static int matrixTraceEventBudget(int numNodes) {
+        return numNodes == 9 ? 1000 : 500;
+    }
+
     private static long[] matrixSeeds() {
         int set = Integer.getInteger("fuzz.seedSet", 1);
         return switch (set) {
@@ -256,8 +271,8 @@ public class FuzzerTest {
         int numNodes = matrixNumNodes();
         for (long seed : matrixSeeds()) {
             new Fuzzer(seed, numNodes, 3, 1,
-                       Integer.MAX_VALUE, 40, 1, 1,
-                       500, MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 0,
+                       Integer.MAX_VALUE, 40, 1, matrixCrashQuota(numNodes),
+                       matrixTraceEventBudget(numNodes), MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 0,
                        false, false, HistoryMode.FULL_HISTORY, StageClassifier.EXTENT,
                        "modelfuzz").run();
         }
@@ -272,8 +287,8 @@ public class FuzzerTest {
         int numNodes = matrixNumNodes();
         for (long seed : matrixSeeds()) {
             new Fuzzer(seed, numNodes, 3, 1,
-                       Integer.MAX_VALUE, 40, 1, 1,
-                       500, MATRIX_RUN_DURATION_MS, "localhost:2023", false, 700, 0,
+                       Integer.MAX_VALUE, 40, 1, matrixCrashQuota(numNodes),
+                       matrixTraceEventBudget(numNodes), MATRIX_RUN_DURATION_MS, "localhost:2023", false, 700, 0,
                        false, false, HistoryMode.FULL_HISTORY, StageClassifier.EXTENT,
                        "random").run();
         }
@@ -288,8 +303,8 @@ public class FuzzerTest {
         int numNodes = matrixNumNodes();
         for (long seed : matrixSeeds()) {
             new Fuzzer(seed, numNodes, 3, 1,
-                       Integer.MAX_VALUE, 40, 1, 1,
-                       500, MATRIX_RUN_DURATION_MS, "localhost:2023", false, 700, 0,
+                       Integer.MAX_VALUE, 40, 1, matrixCrashQuota(numNodes),
+                       matrixTraceEventBudget(numNodes), MATRIX_RUN_DURATION_MS, "localhost:2023", false, 700, 0,
                        true, false, HistoryMode.FULL_HISTORY, StageClassifier.EXTENT,
                        "randomschedule").run();
         }
@@ -305,8 +320,8 @@ public class FuzzerTest {
         int numNodes = matrixNumNodes();
         for (long seed : matrixSeeds()) {
             new Fuzzer(seed, numNodes, 3, 1,
-                       Integer.MAX_VALUE, 40, 1, 1,
-                       500, MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 0,
+                       Integer.MAX_VALUE, 40, 1, matrixCrashQuota(numNodes),
+                       matrixTraceEventBudget(numNodes), MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 0,
                        false, true, HistoryMode.FULL_HISTORY, StageClassifier.EXTENT,
                        "predicate").run();
         }
@@ -321,8 +336,8 @@ public class FuzzerTest {
         int numNodes = matrixNumNodes();
         for (long seed : matrixSeeds()) {
             new Fuzzer(seed, numNodes, 3, 1,
-                       Integer.MAX_VALUE, 40, 1, 1,
-                       500, MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 0,
+                       Integer.MAX_VALUE, 40, 1, matrixCrashQuota(numNodes),
+                       matrixTraceEventBudget(numNodes), MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 0,
                        false, true, HistoryMode.FULL_HISTORY, StageClassifier.REACHED_COMPLETED,
                        "predicateReached").run();
         }
@@ -338,41 +353,8 @@ public class FuzzerTest {
         int numNodes = matrixNumNodes();
         for (long seed : matrixSeeds()) {
             new Fuzzer(seed, numNodes, 3, 1,
-                       Integer.MAX_VALUE, 40, 1, 1,
-                       500, MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 7000,
-                       false, true, HistoryMode.CURRENT_STAGE_ONLY, StageClassifier.EXTENT,
-                       "predicateCompressed").run();
-        }
-    }
-
-    /**
-     * Predicate-guided, full history but the coarser REACHED_COMPLETED classifier instead of EXTENT.
-     *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.predicateReachedMatrix" -PfuzzNodes=7 -PfuzzSet=1
-     */
-    @Test
-    public void predicateReachedMatrix() {
-        int numNodes = matrixNumNodes();
-        for (long seed : matrixSeeds()) {
-            new Fuzzer(seed, numNodes, 3, 1,
-                       Integer.MAX_VALUE, 40, 1, 1,
-                       500, MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 0,
-                       false, true, HistoryMode.FULL_HISTORY, StageClassifier.REACHED_COMPLETED,
-                       "predicateReached").run();
-        }
-    }
-
-    /**
-     * Predicate-guided, CURRENT_STAGE_ONLY (compressed) history with the EXTENT classifier, and
-     * periodic reseeding every 7000 iterations instead of the other variants' pure mutation queue.
-     *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.predicateCompressedMatrix" -PfuzzNodes=7 -PfuzzSet=1
-     */
-    @Test
-    public void predicateCompressedMatrix() {
-        int numNodes = matrixNumNodes();
-        for (long seed : matrixSeeds()) {
-            new Fuzzer(seed, numNodes, 3, 1,
-                       Integer.MAX_VALUE, 40, 1, 1,
-                       500, MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 7000,
+                       Integer.MAX_VALUE, 40, 1, matrixCrashQuota(numNodes),
+                       matrixTraceEventBudget(numNodes), MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 7000,
                        false, true, HistoryMode.CURRENT_STAGE_ONLY, StageClassifier.EXTENT,
                        "predicateCompressed").run();
         }
