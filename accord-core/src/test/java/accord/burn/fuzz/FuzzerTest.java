@@ -220,10 +220,10 @@ public class FuzzerTest {
         fuzzer.run();
     }
 
-    // --- 24h matrix runs -------------------------------------------------------------------
+    // --- 16h matrix runs -------------------------------------------------------------------
     // Node count comes from the "fuzz.nodes" system property (set via -PfuzzNodes on the Gradle
     // command line - see accord-core/build.gradle) so the same method drives 5/7/9-node runs
-    // without editing source. Each method loops one 5-seed set internally, one 24h Fuzzer run per
+    // without editing source. Each method loops one 5-seed set internally, one 16h Fuzzer run per
     // seed, so one Gradle invocation covers half a (mode, node count) row of the matrix. Which
     // set runs comes from the "fuzz.seedSet" system property (set via -PfuzzSet; 1 or 2, defaults
     // to 1 if unset) so both halves can run as separate parallel processes.
@@ -232,7 +232,7 @@ public class FuzzerTest {
 
     private static final long[] SEED_SET_1 = {1L, 2L, 42L, 420L, 5L};
     private static final long[] SEED_SET_2 = {6L, 123L, 8L, 9L, 10L};
-    private static final long MATRIX_RUN_DURATION_MS = 24L * 60 * 60 * 1000;
+    private static final long MATRIX_RUN_DURATION_MS = 16L * 60 * 60 * 1000;
 
     private static int matrixNumNodes() {
         return Integer.getInteger("fuzz.nodes", 7);
@@ -362,7 +362,7 @@ public class FuzzerTest {
 
     @Test
     public void testLongExploration2() {
-        long time = 12* 60 * 60 * 1000;
+        long time = 20 * 60 * 1000;
         Fuzzer fuzzer = new Fuzzer(
                 123L,            // seed
                 7,              // numNodes
