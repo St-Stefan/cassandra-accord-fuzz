@@ -16,7 +16,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Launches the three predicate-guided variants side by side, each ~24h/seed sequentially within
+# Launches the three predicate-guided variants side by side, each ~16h/seed sequentially within
 # its seed set. They share whatever TLC server (if any) is listening at localhost:2023.
 #
 #   ./scripts/run-predicate-variants.sh                # all 3 variants

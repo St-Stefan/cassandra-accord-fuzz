@@ -17,7 +17,7 @@
 # limitations under the License.
 #
 # Launches the full fuzzer matrix: 4 modes x 3 node counts x 2 seed sets (5 seeds each),
-# each seed running ~24h sequentially within its set (~5 days/combo). Combos run in parallel
+# each seed running ~16h sequentially within its set (~80h / ~3.3 days per combo). Combos run in parallel
 # as separate backgrounded processes on this one box, sharing whatever TLC server (if any) is
 # listening at localhost:2023.
 #
