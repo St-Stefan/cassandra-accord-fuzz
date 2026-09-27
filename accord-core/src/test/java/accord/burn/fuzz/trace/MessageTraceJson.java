@@ -82,6 +82,11 @@ final class MessageTraceJson {
         return "[{\"name\":\"Submit\",\"params\":{\"p\":" + coordinator + ",\"id\":" + tlaId + ",\"t\":" + tlaT + "}}]";
     }
 
+    // Node-level actions with no txn: Crash(p) / Restart(p) in AccordSpec. The mapper reads "p" (no "id").
+    static String toTlaNodeLine(String action, int node) {
+        return "[{\"name\":\"" + action + "\",\"params\":{\"p\":" + node + "}}]";
+    }
+
     // Produces one JSONL line: [{"name":"Deliver","params":{"from":<f>,"to":<t>,"type":"<type>","id":<tlaId>}}]
     // If fieldsJson contains a "phaseq" key it is included in the output so the mapper can
     // distinguish fast-path (StableFastPath) from slow-path (StableSlowPath) TypeStable events.

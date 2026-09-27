@@ -72,7 +72,7 @@ public class FuzzerTest {
      */
     @Test
     public void testLongExploration1() {
-        long time = 12* 60 * 60 * 1000;
+        long time = 18L * 60 * 60 * 1000;
             Fuzzer fuzzer = new Fuzzer(
                     123L,            // seed
                     7,              // numNodes
@@ -100,7 +100,7 @@ public class FuzzerTest {
      */
     @Test
     public void testRandomSchedule() {
-        long time = 12 * 60 * 60 * 1000;
+        long time = 18L * 60 * 60 * 1000;
         Fuzzer fuzzer = new Fuzzer(
                 123L,            // seed
                 7,              // numNodes
@@ -131,7 +131,7 @@ public class FuzzerTest {
      */
     @Test
     public void testPredicateGuidedFuzz() {
-        long time = 8 * 60 * 60 * 1000;
+        long time = 18L * 60 * 60 * 1000;
         Fuzzer fuzzer = new Fuzzer(
                 123L,            // seed
                 7,              // numNodes
@@ -162,7 +162,7 @@ public class FuzzerTest {
      */
     @Test
     public void testPredicateGuidedFuzzCurrentStageOnly() {
-        long time = 8 * 60 * 60 * 1000;
+        long time = 18L * 60 * 60 * 1000;
         Fuzzer fuzzer = new Fuzzer(
                 123L,            // seed
                 7,              // numNodes
@@ -196,7 +196,7 @@ public class FuzzerTest {
      */
     @Test
     public void testPredicateGuidedFuzzReachedCompleted() {
-        long time = 8 * 60 * 60 * 1000;
+        long time = 18L * 60 * 60 * 1000;
         Fuzzer fuzzer = new Fuzzer(
                 123L,            // seed
                 7,              // numNodes
@@ -220,10 +220,10 @@ public class FuzzerTest {
         fuzzer.run();
     }
 
-    // --- 16h matrix runs -------------------------------------------------------------------
+    // --- 18h matrix runs -------------------------------------------------------------------
     // Node count comes from the "fuzz.nodes" system property (set via -PfuzzNodes on the Gradle
     // command line - see accord-core/build.gradle) so the same method drives 5/7/9-node runs
-    // without editing source. Each method loops one 5-seed set internally, one 16h Fuzzer run per
+    // without editing source. Each method loops one 5-seed set internally, one 18h Fuzzer run per
     // seed, so one Gradle invocation covers half a (mode, node count) row of the matrix. Which
     // set runs comes from the "fuzz.seedSet" system property (set via -PfuzzSet; 1 or 2, defaults
     // to 1 if unset) so both halves can run as separate parallel processes.
@@ -232,7 +232,14 @@ public class FuzzerTest {
 
     private static final long[] SEED_SET_1 = {1L, 2L, 42L, 420L, 5L};
     private static final long[] SEED_SET_2 = {6L, 123L, 8L, 9L, 10L};
-    private static final long MATRIX_RUN_DURATION_MS = 16L * 60 * 60 * 1000;
+    private static final long MATRIX_RUN_DURATION_MS = 18L * 60 * 60 * 1000;
+
+    // The shared TLC server runs the crash-aware AccordSpec, so every mode's TLC coverage must
+    // include Crash/Restart actions - otherwise non-crash modes would never be credited with
+    // crash states and coverage.csv wouldn't be comparable against modelfuzzCrash.
+    // modelfuzzMatrix deliberately leaves this off: it targets the crash-free spec and is not
+    // part of run-fuzz-matrix.sh.
+    private static final boolean MATRIX_TLC_CRASHES = true;
 
     private static int matrixNumNodes() {
         return Integer.getInteger("fuzz.nodes", 7);
@@ -279,6 +286,24 @@ public class FuzzerTest {
     }
 
     /**
+     * ModelFuzz with crashes: as {@link #modelfuzzMatrix}, but Crash/Recover events are sent to TLC
+     * as Crash(p)/Restart(p), so node crashes are part of the abstract TLC state that drives
+     * mutation energy. Requires TLC at localhost:2023 running the crash-aware AccordSpec.
+     *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.modelfuzzCrashMatrix" -PfuzzNodes=7 -PfuzzSet=1
+     */
+    @Test
+    public void modelfuzzCrashMatrix() {
+        int numNodes = matrixNumNodes();
+        for (long seed : matrixSeeds()) {
+            new Fuzzer(seed, numNodes, 3, 1,
+                       Integer.MAX_VALUE, 40, 1, matrixCrashQuota(numNodes),
+                       matrixTraceEventBudget(numNodes), MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 0,
+                       false, false, HistoryMode.FULL_HISTORY, StageClassifier.EXTENT,
+                       "modelfuzzCrash", MATRIX_TLC_CRASHES).run();
+        }
+    }
+
+    /**
      * Unguided: swap/crash/restart mutations applied every iteration regardless of coverage.
      *   ./gradlew :accord-core:test --tests "accord.burn.fuzz.FuzzerTest.randomMatrix" -PfuzzNodes=7 -PfuzzSet=1
      */
@@ -290,7 +315,7 @@ public class FuzzerTest {
                        Integer.MAX_VALUE, 40, 1, matrixCrashQuota(numNodes),
                        matrixTraceEventBudget(numNodes), MATRIX_RUN_DURATION_MS, "localhost:2023", false, 700, 0,
                        false, false, HistoryMode.FULL_HISTORY, StageClassifier.EXTENT,
-                       "random").run();
+                       "random", MATRIX_TLC_CRASHES).run();
         }
     }
 
@@ -306,7 +331,7 @@ public class FuzzerTest {
                        Integer.MAX_VALUE, 40, 1, matrixCrashQuota(numNodes),
                        matrixTraceEventBudget(numNodes), MATRIX_RUN_DURATION_MS, "localhost:2023", false, 700, 0,
                        true, false, HistoryMode.FULL_HISTORY, StageClassifier.EXTENT,
-                       "randomschedule").run();
+                       "randomschedule", MATRIX_TLC_CRASHES).run();
         }
     }
 
@@ -323,7 +348,7 @@ public class FuzzerTest {
                        Integer.MAX_VALUE, 40, 1, matrixCrashQuota(numNodes),
                        matrixTraceEventBudget(numNodes), MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 0,
                        false, true, HistoryMode.FULL_HISTORY, StageClassifier.EXTENT,
-                       "predicate").run();
+                       "predicate", MATRIX_TLC_CRASHES).run();
         }
     }
 
@@ -339,7 +364,7 @@ public class FuzzerTest {
                        Integer.MAX_VALUE, 40, 1, matrixCrashQuota(numNodes),
                        matrixTraceEventBudget(numNodes), MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 0,
                        false, true, HistoryMode.FULL_HISTORY, StageClassifier.REACHED_COMPLETED,
-                       "predicateReached").run();
+                       "predicateReached", MATRIX_TLC_CRASHES).run();
         }
     }
 
@@ -356,13 +381,13 @@ public class FuzzerTest {
                        Integer.MAX_VALUE, 40, 1, matrixCrashQuota(numNodes),
                        matrixTraceEventBudget(numNodes), MATRIX_RUN_DURATION_MS, "localhost:2023", true, 700, 7000,
                        false, true, HistoryMode.CURRENT_STAGE_ONLY, StageClassifier.EXTENT,
-                       "predicateCompressed").run();
+                       "predicateCompressed", MATRIX_TLC_CRASHES).run();
         }
     }
 
     @Test
     public void testLongExploration2() {
-        long time = 20 * 60 * 1000;
+        long time = 18L * 60 * 60 * 1000;
         Fuzzer fuzzer = new Fuzzer(
                 123L,            // seed
                 7,              // numNodes

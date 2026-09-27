@@ -207,6 +207,15 @@ public class Trace implements Iterable<TraceEvent> {
      *                    (CMD TLC client).
      */
     public String toTlaJson(boolean singleArray) {
+        return toTlaJson(singleArray, false);
+    }
+
+    /**
+     * @param includeCrashes if true, Crash/Recover events are emitted as the spec's Crash(p)/Restart(p)
+     *                       actions (for the crash-aware AccordSpec); if false they are dropped, which is
+     *                       what the crash-free spec expects.
+     */
+    public String toTlaJson(boolean singleArray, boolean includeCrashes) {
         // Pass 1: assign stable TLA+ ids by coordinator node order (consistent across runs),
         // and separately compute a HLC-based rank (t) that encodes the true timestamp ordering.
         Map<Integer, List<TxnId>> coordTxnIds = new LinkedHashMap<>();
@@ -243,6 +252,14 @@ public class Trace implements Iterable<TraceEvent> {
         // Pass 2: collect action strings in "[{...}]" form, then format output.
         List<String> actionLines = new ArrayList<>();
         for (TraceEvent event : events) {
+            if (includeCrashes && event instanceof TraceEvent.Crash) {
+                actionLines.add(MessageTraceJson.toTlaNodeLine("Crash", ((TraceEvent.Crash) event).node.id));
+                continue;
+            }
+            if (includeCrashes && event instanceof TraceEvent.Recover) {
+                actionLines.add(MessageTraceJson.toTlaNodeLine("Restart", ((TraceEvent.Recover) event).node.id));
+                continue;
+            }
             if (!(event instanceof TraceEvent.Deliver)) continue;
             TraceEvent.Deliver d = (TraceEvent.Deliver) event;
 

@@ -88,6 +88,7 @@ public class Fuzzer {
     private final int reseedFrequency;
     private final boolean randomSchedule;
     private final String runLabel;
+    private final boolean tlcCrashes;
 
     public Fuzzer(long seed, int numNodes, int operations, int concurrency,
                   int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota) {
@@ -178,6 +179,22 @@ public class Fuzzer {
                   int traceEventBudget, long maxDurationMs, String tlcAddr, boolean guided, int maxQueueSize, int reseedFrequency,
                   boolean randomSchedule, boolean usePredicateGuidance, HistoryMode predicateHistoryMode, StageClassifier predicateClassifier,
                   String runLabel) {
+        this(seed, numNodes, operations, concurrency, iterations, seedPopulationSize, mutationsPerTrace, crashQuota,
+             traceEventBudget, maxDurationMs, tlcAddr, guided, maxQueueSize, reseedFrequency, randomSchedule, usePredicateGuidance,
+             predicateHistoryMode, predicateClassifier, runLabel, false);
+    }
+
+    /**
+     * @param tlcCrashes if true, Crash/Recover events in executed traces are sent to TLC as the
+     *                   spec's Crash(p)/Restart(p) actions, so crashes become part of the TLC state
+     *                   (ModelFuzz with crashes). Requires the TLC server to be running the
+     *                   crash-aware AccordSpec; the crash-free spec has no such actions.
+     */
+    public Fuzzer(long seed, int numNodes, int operations, int concurrency,
+                  int iterations, int seedPopulationSize, int mutationsPerTrace, int crashQuota,
+                  int traceEventBudget, long maxDurationMs, String tlcAddr, boolean guided, int maxQueueSize, int reseedFrequency,
+                  boolean randomSchedule, boolean usePredicateGuidance, HistoryMode predicateHistoryMode, StageClassifier predicateClassifier,
+                  String runLabel, boolean tlcCrashes) {
         this.random = new Random(seed);
         this.baseSeed = seed;
         this.numNodes = numNodes;
@@ -190,7 +207,7 @@ public class Fuzzer {
         this.traceEventBudget = traceEventBudget;
         this.maxDurationMs = maxDurationMs;
         this.workQueue = new ArrayDeque<>();
-        this.guider = tlcAddr != null ? new TlcGuider(tlcAddr) : null;
+        this.guider = tlcAddr != null ? new TlcGuider(tlcAddr, tlcCrashes) : null;
         this.predicateGuider = new PredicateGuider(predicateClassifier, predicateHistoryMode);
         this.usePredicateGuidance = usePredicateGuidance;
         this.guided = guided;
@@ -198,6 +215,7 @@ public class Fuzzer {
         this.reseedFrequency = reseedFrequency;
         this.randomSchedule = randomSchedule;
         this.runLabel = runLabel;
+        this.tlcCrashes = tlcCrashes;
     }
 
     /**
@@ -207,10 +225,10 @@ public class Fuzzer {
     public void run() {
         long startTime = System.currentTimeMillis();
         String sessionId = SessionNaming.id(runLabel, numNodes, baseSeed);
-        logger.info("=== FUZZER START === seed={}, nodes={}, ops={}, seeds={}, iterations={}, mutations/trace={}, traceBudget={}, maxDuration={}",
+        logger.info("=== FUZZER START === seed={}, nodes={}, ops={}, seeds={}, iterations={}, mutations/trace={}, traceBudget={}, maxDuration={}, tlcCrashes={}",
                     baseSeed, numNodes, operations, seedPopulationSize, iterations, mutationsPerTrace,
                     traceEventBudget > 0 ? traceEventBudget : "unlimited",
-                    maxDurationMs > 0 ? maxDurationMs + "ms" : "unlimited");
+                    maxDurationMs > 0 ? maxDurationMs + "ms" : "unlimited", tlcCrashes);
 
         Path dir = Path.of(System.getProperty("user.dir"), "build", "test-traces", "fuzzer");
         try {
@@ -232,8 +250,8 @@ public class Fuzzer {
              BufferedWriter errorsWriter       = Files.newBufferedWriter(errorsFile,       StandardCharsets.UTF_8)) {
 
             if (guider != null)
-                csvWriter.write("iteration,unique_abstract_states\n");
-            predicateCsvWriter.write("iteration,unique_abstract_states\n");
+                csvWriter.write("iteration,unique_abstract_states,elapsed_ms\n");
+            predicateCsvWriter.write("iteration,unique_abstract_states,elapsed_ms\n");
             repopulateWriter.write("iteration\n");
             errorsWriter.write("run_id,seed,exception_class,full_stack_trace\n");
 
@@ -298,13 +316,13 @@ public class Fuzzer {
                 Integer tlcNewStates = null;
                 if (guider != null) {
                     tlcNewStates = guider.check(result);
-                    csvWriter.write(i + "," + guider.totalSeenStates() + "\n");
+                    csvWriter.write(i + "," + guider.totalSeenStates() + "," + (System.currentTimeMillis() - startTime) + "\n");
                     csvWriter.flush();
                 }
                 Integer predicateNewStates = null;
                 if (usePredicateGuidance) {
                     predicateNewStates = predicateGuider.check(result);
-                    predicateCsvWriter.write(i + "," + predicateGuider.totalSeenStates() + "\n");
+                    predicateCsvWriter.write(i + "," + predicateGuider.totalSeenStates() + "," + (System.currentTimeMillis() - startTime) + "\n");
                     predicateCsvWriter.flush();
                 }
 

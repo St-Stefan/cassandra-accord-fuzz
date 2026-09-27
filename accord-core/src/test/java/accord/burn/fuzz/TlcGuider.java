@@ -42,7 +42,11 @@ public class TlcGuider {
     private final Set<String> seenStates = new HashSet<>();
 
     public TlcGuider(String addr) {
-        this.client = new TlcClient(addr);
+        this(addr, false);
+    }
+
+    public TlcGuider(String addr, boolean includeCrashes) {
+        this.client = new TlcClient(addr, includeCrashes);
     }
 
     /**

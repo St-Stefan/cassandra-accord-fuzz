@@ -17,7 +17,7 @@
 # limitations under the License.
 #
 # Launches the full fuzzer matrix: 4 modes x 3 node counts x 2 seed sets (5 seeds each),
-# each seed running ~16h sequentially within its set (~80h / ~3.3 days per combo). Combos run in parallel
+# each seed running ~18h sequentially within its set (~90h / ~3.75 days per combo). Combos run in parallel
 # as separate backgrounded processes on this one box, sharing whatever TLC server (if any) is
 # listening at localhost:2023.
 #
@@ -26,7 +26,7 @@
 #   ./scripts/run-fuzz-matrix.sh --mode=predicate         # predicate, all node counts, both sets
 #   ./scripts/run-fuzz-matrix.sh --nodes=7                # all 4 modes at 7 nodes, both sets
 #   ./scripts/run-fuzz-matrix.sh --set=1                  # just seed set 1, everything else
-#   ./scripts/run-fuzz-matrix.sh --mode=modelfuzz --nodes=7 --set=2   # just that one combo
+#   ./scripts/run-fuzz-matrix.sh --mode=modelfuzzcrash --nodes=7 --set=2   # just that one combo
 #
 # Logs land in build/fuzz-logs/<mode>_n<nodes>_set<N>.log (under build/ so Apache Rat's
 # license-header audit - a dependency of the test task - doesn't scan and fail on plain-text log
@@ -50,8 +50,8 @@ for arg in "$@"; do
 done
 
 case "$MODE_FILTER" in
-    ""|modelfuzz|random|randomschedule|predicate) ;;
-    *) echo "Unknown --mode='$MODE_FILTER' (expected modelfuzz, random, randomschedule, or predicate)" >&2; exit 1 ;;
+    ""|modelfuzzcrash|random|randomschedule|predicate) ;;
+    *) echo "Unknown --mode='$MODE_FILTER' (expected modelfuzzcrash, random, randomschedule, or predicate)" >&2; exit 1 ;;
 esac
 case "$NODES_FILTER" in
     ""|5|7|9) ;;
@@ -81,12 +81,15 @@ launch() {
     launched=$((launched + 1))
 }
 
-launch modelfuzz      modelfuzzMatrix      5 1
-launch modelfuzz      modelfuzzMatrix      5 2
-launch modelfuzz      modelfuzzMatrix      7 1
-launch modelfuzz      modelfuzzMatrix      7 2
-launch modelfuzz      modelfuzzMatrix      9 1
-launch modelfuzz      modelfuzzMatrix      9 2
+# Every mode below sends Crash/Restart actions to TLC, so the TLC server must be running the
+# crash-aware AccordSpec. Plain modelfuzz (crash-free spec) is not part of this matrix; run
+# FuzzerTest.modelfuzzMatrix by hand against the old spec if needed.
+launch modelfuzzcrash modelfuzzCrashMatrix 5 1
+launch modelfuzzcrash modelfuzzCrashMatrix 5 2
+launch modelfuzzcrash modelfuzzCrashMatrix 7 1
+launch modelfuzzcrash modelfuzzCrashMatrix 7 2
+launch modelfuzzcrash modelfuzzCrashMatrix 9 1
+launch modelfuzzcrash modelfuzzCrashMatrix 9 2
 
 launch random         randomMatrix         5 1
 launch random         randomMatrix         5 2

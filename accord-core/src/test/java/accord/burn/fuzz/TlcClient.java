@@ -35,9 +35,16 @@ public class TlcClient {
 
     private final String baseUrl;
     private final HttpClient http;
+    private final boolean includeCrashes;
 
     public TlcClient(String addr) {
+        this(addr, false);
+    }
+
+    /** @param includeCrashes send Crash/Restart actions too - only for the crash-aware AccordSpec. */
+    public TlcClient(String addr, boolean includeCrashes) {
         this.baseUrl = "http://" + addr;
+        this.includeCrashes = includeCrashes;
         this.http = HttpClient.newBuilder()
                               .connectTimeout(Duration.ofSeconds(5))
                               .build();
@@ -49,7 +56,7 @@ public class TlcClient {
                 .uri(URI.create(baseUrl + "/execute"))
                 .header("Content-Type", "application/json")
                 .timeout(Duration.ofSeconds(30))
-                .POST(HttpRequest.BodyPublishers.ofString(trace.toTlaJson(true)))
+                .POST(HttpRequest.BodyPublishers.ofString(trace.toTlaJson(true, includeCrashes)))
                 .build();
         try {
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
